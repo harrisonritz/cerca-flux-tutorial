@@ -1,0 +1,17 @@
+[project]
+name = "cerca-flux-tutorial"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "jupyter>=1.1.1",
+    "mne>=1.13.2",
+    "mne-bids>=0.19.0",
+    "mne-qt-browser>=0.7.5",
+    "nibabel>=5.4.2",
+    "nilearn>=0.14.1",
+    "numpy>=2.5.3",
+    "pandas>=3.0.5",
+    "pyqt5>=5.15.11",
+]
