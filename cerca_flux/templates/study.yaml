@@ -1,0 +1,314 @@
+# =============================================================================
+# Cerca OPM-FLUX batch pipeline - study configuration
+# =============================================================================
+# Every value below is a choice the FLUX tutorial notebooks make in a code cell.
+# Values shown are the tutorial defaults for the Cerca/QuSpin spatial-attention
+# (SpAtt) dataset; edit them for your paradigm and pre-register them.
+#
+#   cerca-flux list  --config study.yaml     # what will be processed
+#   cerca-flux run   --config study.yaml --n-jobs 4
+#   cerca-flux run   --config study.yaml --preset preproc
+#   cerca-flux slurm --config study.yaml --out slurm/
+#
+# Stage order (this is the OPM-FLUX recommendation, and is not configurable):
+#   qc -> hfc -> annotate -> ica -> epochs -> erf -> tfr -> mvpa
+#      -> forward -> source -> morph -> report
+# =============================================================================
+
+study:
+  # Root of the BIDS dataset. A relative path resolves against this file.
+  bids_root: /path/to/Cerca_Spatt_BIDS
+  # Outputs go to <bids_root>/derivatives/<derivatives_name>/
+  derivatives_name: cerca-flux
+  # null = every subject / session / task / run found in the dataset.
+  subjects: null
+  sessions: null
+  tasks: null
+  runs: null
+  datatype: meg
+  # FreeSurfer SUBJECTS_DIR; relative paths resolve against bids_root.
+  fs_subjects_dir: derivatives/freesurfer
+  # How a BIDS subject label maps onto a FreeSurfer subject directory.
+  fs_subject_template: "sub-{subject}"
+  # Mains frequency, used only when the BIDS sidecar does not give one.
+  # 50 Hz in the UK/EU, 60 Hz in the Americas.
+  line_freq: 50
+
+channels:
+  # Cerca triaxial channels are named "<sensor> <slot> <axis>", e.g. "F9 C8 Z".
+  # Z is radial: the OPM analogue of a conventional SQUID magnetometer.
+  radial_axis: Z
+  axes: [X, Y, Z]
+  exclude_name_prefixes: [BNC]
+  # Sensors noted as faulty during acquisition, per subject label. All three
+  # axes of a listed sensor are marked bad together. "*" applies to everyone.
+  manual_bads:
+    "*": []
+    # "01": [B4, H6]
+  # "token" matches the sensor id exactly ("B4" does not match "B41");
+  # "substring" reproduces the tutorial's looser matching.
+  bad_sensor_match: token
+
+# --- 1. Sensor quality check (A First Look / A2 Sensor Quality checking) ------
+qc:
+  enabled: true
+  psd_fmin: 1.0
+  psd_fmax: 120.0
+  psd_n_fft_seconds: 2.0     # 2 s -> 0.5 Hz resolution, as in the tutorial
+  psd_tmin: 30.0             # start of the stretch used for the quality PSD
+  psd_span: 120.0
+  # robust_mad: median + k.MAD within each axis (travels across sites)
+  # fixed_db:   the tutorial's absolute 39.1 dB cut (site-specific)
+  method: robust_mad
+  mad_threshold: 6.0
+  fixed_db_threshold: 39.1
+  # HFC projects across the array, so flat sensors must go too, not only noisy ones.
+  flag_flat: true
+  flat_mad_threshold: 6.0
+  first_look_tmin: 40.0
+  first_look_span: 10.0
+
+# --- 2. Homogeneous field correction (ArtefactSuppressionHFC) -----------------
+hfc:
+  enabled: true
+  order: 2                   # spherical-harmonic order; higher removes more
+                             # interference but risks attenuating brain signal
+  # Resample before HFC to bound memory. Must stay above 2x the muscle band
+  # (>= 300 Hz for a 110-140 Hz band). null keeps the BIDS sampling rate.
+  resample_sfreq: null
+  # "all" keeps X/Y/Z through the projection (the triaxial array constrains the
+  # homogeneous model better); "radial" drops to Z immediately afterwards.
+  keep_axes: all
+
+# --- 3. Artefact annotation (ArtefactAnnotation) ------------------------------
+annotate:
+  enabled: true
+  eog:
+    enabled: true
+    prefer_native: true      # use a recorded EOG channel when the system has one
+    # Otherwise build a bipolar frontal surrogate: radial(left) - radial(right).
+    surrogate_left: F9
+    surrogate_right: F10
+    surrogate_name: OCC
+    l_freq: 1.0
+    h_freq: 10.0
+    # Fixed threshold in tesla (the tutorial uses 0.3e-11 T = 3000 fT).
+    # null lets MNE choose adaptively, which generalises better across subjects.
+    threshold: null
+    window: 0.5              # annotated span, centred on each blink
+    description: BAD_blink
+  muscle:
+    enabled: true
+    threshold: 3.0           # z-score of the band-limited envelope
+    filter_freq: [110.0, 140.0]
+    min_length_good: 0.1
+
+# --- 4. ICA (ICA) -------------------------------------------------------------
+ica:
+  enabled: true
+  method: fastica
+  # int = PCA dimensionality (tutorial: 30); a float < 1 = variance retained.
+  # Clamped automatically to the rank HFC leaves behind.
+  n_components: 30
+  random_state: 96
+  max_iter: 500
+  # The decomposition is estimated on this band-passed, downsampled copy and
+  # applied to the full-rate data. The high-pass matters most.
+  fit_l_freq: 3.0
+  fit_h_freq: 30.0
+  fit_sfreq: 250.0
+  # The tutorial selects components by eye; a batch run cannot, so components
+  # are scored against the ocular channel and a synthesised cardiac signal.
+  # Inspect the saved component figures for every subject.
+  detect_eog: true
+  eog_threshold: 3.0
+  detect_ecg: true
+  ecg_threshold: auto
+  max_exclude: 5             # tutorial reports 2-5 components per participant
+
+# --- 5. Epoching (ConditionSpecificTrials) ------------------------------------
+epochs:
+  enabled: true
+  # Filtered once here so edge effects fall outside the epochs.
+  # Leave continuous_h_freq null to preserve the gamma band the TFR stage needs.
+  continuous_l_freq: 0.1
+  continuous_h_freq: null
+  # REQUIRED. Condition name -> the BIDS trial_type label(s) pooled into it.
+  # Several labels under one name are pooled (e.g. resp_T + resp_L -> response).
+  conditions:
+    cue_left:  [cue_Left]
+    cue_right: [cue_Right]
+  tmin: -0.75                # pre-cue baseline plus the anticipatory interval
+  tmax: 2.0
+  baseline: null             # deferred, so each analysis chooses its own
+  detrend: 1                 # per-epoch linear detrend
+  # Peak-to-peak rejection, in tesla. 1.0e-11 = 10 pT (cue-locked tutorial);
+  # response-locked epochs typically need a looser value such as 5.0e-11.
+  reject:
+    mag: 1.0e-11
+  reject_by_annotation: true
+  picks: all                 # keep X/Y/Z in the saved epochs for later reuse
+
+# --- 6. Event-related fields (EventRelatedFields) -----------------------------
+erf:
+  enabled: true
+  picks: radial
+  l_freq: null
+  h_freq: 30.0
+  crop: [-0.1, 0.4]
+  detrend: true              # applied before the baseline, so the pre-event
+  baseline: [-0.1, 0.0]      # interval ends up centred on zero
+  topomap_times: [0.16]
+
+# --- 7. Time-frequency power (TimeFrequencyPower) -----------------------------
+tfr:
+  enabled: true
+  picks: radial
+  bands:
+    # n_cycles = freqs / n_cycles_divisor fixes the window at
+    # dT = n_cycles_divisor/2 s; time_bandwidth sets the taper count (TBW - 1)
+    # and the spectral smoothing (half-bandwidth = TBW / (2.dT)).
+    - name: slow             # dT = 0.5 s, 1 taper, +/-2 Hz smoothing
+      fmin: 3.0
+      fmax: 30.0
+      fstep: 1.0
+      n_cycles_divisor: 2.0
+      time_bandwidth: 2.0
+      decim: 1
+      baseline: [-0.5, -0.25]   # must not overlap t > 0 given the 0.5 s window
+      baseline_mode: percent
+      topomap: [0.25, 0.75, 9.0, 11.0]   # [tmin, tmax, fmin, fmax]
+    - name: fast             # dT = 0.25 s, 3 tapers, +/-8 Hz smoothing
+      fmin: 31.0             # broad smoothing suits broad-band visual gamma
+      fmax: 100.0
+      fstep: 2.0
+      n_cycles_divisor: 4.0
+      time_bandwidth: 4.0
+      decim: 1
+      baseline: [1.0, 1.1]   # grating onset is at t = 1.2 s in this paradigm
+      baseline_mode: percent
+      topomap: [1.2, 1.5, 75.0, 90.0]
+  contrasts:
+    # Alpha lateralisation, computed without a baseline: the two conditions are
+    # contrasted directly against each other.
+    - name: alpha_lateralisation
+      band: slow
+      a: cue_right
+      b: cue_left
+      kind: normalised_difference    # (a-b)/(a+b)
+
+# --- 8. Decoding (Classification) ---------------------------------------------
+mvpa:
+  enabled: true
+  conditions: [cue_left, cue_right]   # exactly two
+  picks: radial
+  h_freq: 45.0
+  sfreq: 125.0
+  crop: [-0.1, 1.5]
+  window_s: 0.1              # all sensors x all samples in the window = features
+  step_samples: 5
+  cv: 10
+  scoring: roc_auc
+  estimator: linear_svm      # or rbf_svm
+  balance_classes: true      # so AUC is not inflated by unequal trial counts
+  random_state: 99
+  n_jobs: 1
+
+# --- 9. Forward model (ForwardModel) ------------------------------------------
+forward:
+  enabled: true
+  # MRI/head transform from coregistration. null searches the FreeSurfer bem/
+  # folder and the derivatives tree. Placeholders: {fs_subjects_dir},
+  # {fs_subject}, {subject}, {session}, {bids_root}, {deriv_root}. Globs allowed.
+  trans: null
+  # Precomputed BEM solution; null builds one from the FreeSurfer surfaces.
+  bem: null
+  bem_ico: 4
+  bem_conductivity: [0.3]    # single shell: adequate for MEG, unlike EEG
+  volume:
+    enabled: true
+    pos: 5.0                 # grid spacing in mm
+    mindist: 5.0             # exclude sources within 5 mm of the inner skull
+    add_interpolator: true   # needed to morph the volume to a template
+  surface:
+    enabled: true
+    spacing: oct6            # ~4098 vertices per hemisphere
+    surface: white
+    mindist: 5.0
+    add_dist: false
+
+# --- 10. Source reconstruction (DICSbeamforming) ------------------------------
+source:
+  enabled: true
+  picks: radial
+  reg: 0.05                  # diagonal loading, as a fraction of sensor power
+  # HFC and ICA leave the data rank-deficient, and the beamformer must be told:
+  # "info" uses the projector count, "relative" the tolerance-based estimate.
+  rank: info
+  reduce_rank: true
+  real_filter: true
+  depth: null                # no depth weighting (the tutorial's depth=0)
+  spaces: [volume, surface]
+  lcmv:
+    enabled: true
+    cov_tmin: -0.8           # one common covariance window spanning baseline
+    cov_tmax: 0.8            # and active intervals
+    cov_method: shrunk
+    baseline_window: [-0.8, -0.5]
+    active_window: [-0.2, 0.3]
+    pick_ori: max-power
+    weight_norm: unit-noise-gain-invariant
+    conditions: []           # empty = all conditions pooled
+  dics:
+    enabled: true
+    bands:
+      - name: alpha
+        fmin: 8.0
+        fmax: 12.0
+        bandwidth: 3.0       # 3 Hz on a 0.5 s window -> 1 DPSS taper
+        adaptive: false
+        low_bias: true
+        conditions: []
+        windows:
+          pre:  [-0.7, -0.2]
+          post: [0.1, 0.6]
+        contrasts:
+          - name: post_vs_pre
+            a: post
+            b: pre
+            kind: relative_change      # (a-b)/b
+      - name: gamma
+        fmin: 70.0
+        fmax: 80.0
+        bandwidth: 8.0       # 8 Hz -> 3 tapers; broad-band gamma needs more
+        adaptive: true       # spectral smoothing than alpha
+        low_bias: true
+        conditions: []
+        windows:
+          cue:  [0.6, 1.1]
+          stim: [1.2, 1.7]
+        contrasts:
+          - name: stim_vs_cue
+            a: stim
+            b: cue
+            kind: relative_change
+
+# --- 11. Morphing to a template ------------------------------------------------
+morph:
+  enabled: true
+  subject_to: fsaverage      # must exist in fs_subjects_dir
+  volume_zooms: 5.0
+  surface_spacing: 5         # ico5: ~10242 vertices per hemisphere
+  fetch_fsaverage: true      # download it once if missing (needs network access)
+
+# --- Output and group ----------------------------------------------------------
+output:
+  report: true               # per-subject HTML report
+  figures: true
+  figure_dpi: 150
+  overwrite: false           # true recomputes stages whose outputs exist
+
+group:
+  enabled: true
+  grand_average: true        # evoked, TFR and decoding averages
+  average_sources: true      # average of the template-morphed estimates
