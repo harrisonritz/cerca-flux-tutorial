@@ -5,3 +5,11 @@ Sub_01*
 data/*
 outputs/flux_oxford_princeton/*.png
 /outputs
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.egg-info/

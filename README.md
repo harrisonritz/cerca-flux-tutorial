@@ -12,6 +12,39 @@ The FLUX can be used for education either in self-studies or guided workshops. <
 We expect that the FLUX pipeline will strengthen the field of MEG by providing some standardization on the basic analysis steps and by aligning approaches across toolboxes. Furthermore, we also aim to support new researchers entering the field by providing education and training. <br />
 The FLUX pipeline is not meant to be static; it will evolve with the development of the toolboxes and with new insights. Furthermore, with the anticipated increase in MEG systems based on the Optically Pumped Magnetometers, the pipeline will also evolve to embrace these developments.
 
+## Running the pipeline over a whole dataset 🚀
+
+The notebooks in this repository walk through **one** recording interactively.
+The `cerca_flux` package applies the same steps, in the same order and with the
+same parameters, to an entire BIDS study from one configuration file.
+
+```bash
+uv sync
+uv run cerca-flux template > study.yaml    # annotated starter config; edit it
+uv run cerca-flux list --config study.yaml # check what will be processed
+uv run cerca-flux run  --config study.yaml --n-jobs 4
+```
+
+It assumes BIDS-organised data with labelled `events.tsv`, an organised
+FreeSurfer `SUBJECTS_DIR`, and one MRI/head transform per subject.
+
+Stages run in the OPM-FLUX order — `qc → hfc → annotate → ica → epochs → erf →
+tfr → mvpa → forward → source → morph → report` — and each caches its output in
+`derivatives/cerca-flux/`, so any subset can be re-run on its own:
+
+```bash
+uv run cerca-flux run --config study.yaml --preset preproc
+uv run cerca-flux run --config study.yaml --stages tfr source
+uv run cerca-flux slurm --config study.yaml --out slurm/   # one array task per recording
+```
+
+See **[docs/PIPELINE.md](docs/PIPELINE.md)** for the stage-by-stage description,
+the mapping from each notebook to its function, the output layout, and the
+places where a batch run must deviate from a value the tutorial tuned by eye
+(ICA component selection above all).
+
+<br />
+
 ### For more information, check our paper on [NeuroImage](https://www.sciencedirect.com/science/article/pii/S1053811922001768?via%3Dihub) 📖
 <br />
 
