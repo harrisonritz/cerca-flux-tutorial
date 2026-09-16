@@ -110,7 +110,7 @@ ica:
   # int = PCA dimensionality (tutorial: 30); a float < 1 = variance retained.
   # Clamped automatically to the rank HFC leaves behind.
   n_components: 30
-  random_state: 96
+  random_state: 99
   max_iter: 500
   # The decomposition is estimated on this band-passed, downsampled copy and
   # applied to the full-rate data. The high-pass matters most.
@@ -124,7 +124,7 @@ ica:
   eog_threshold: 3.0
   detect_ecg: true
   ecg_threshold: auto
-  max_exclude: 5             # tutorial reports 2-5 components per participant
+  max_exclude: 15             # tutorial reports 2-5 components per participant
 
 # --- 5. Epoching (ConditionSpecificTrials) ------------------------------------
 epochs:
