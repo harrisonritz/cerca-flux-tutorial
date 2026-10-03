@@ -51,6 +51,7 @@ def build_forward(ctx: SubjectContext) -> dict[str, mne.Forward]:
         )
     ctx.state["trans"] = str(trans)
     ctx.logger.info("forward: using transform %s", trans.name)
+    trans = _load_trans(trans)
 
     bem_sol = _resolve_bem(ctx, fs_subject, subjects_dir)
     info = _forward_info(ctx)
@@ -84,6 +85,18 @@ def build_forward(ctx: SubjectContext) -> dict[str, mne.Forward]:
     if not forwards:
         raise RuntimeError(f"{ctx.rec.key}: no source space is enabled in the config")
     return forwards
+
+
+def _load_trans(path):
+    """The MRI/head transform, from a ``-trans.fif`` or from an existing forward model.
+
+    Some datasets ship a forward solution but no separate transform file (the
+    Oxford example is one); the transform is stored inside the forward model, so
+    ``forward.trans`` may point at a ``*-fwd.fif`` and it is read from there.
+    """
+    if path.name.endswith(("-fwd.fif", "_fwd.fif")):
+        return mne.read_forward_solution(path, verbose="ERROR")["mri_head_t"]
+    return path
 
 
 def _forward_info(ctx: SubjectContext) -> mne.Info:

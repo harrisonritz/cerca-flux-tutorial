@@ -220,6 +220,14 @@ class SubjectPaths:
     def metrics(self) -> Path:
         return self.analysis("qc", ".json")
 
+    @property
+    def motor_sensor(self) -> Path:
+        return self.analysis("motor-sensor", ".npz")
+
+    @property
+    def motor_source(self) -> Path:
+        return self.analysis("motor-source", ".npz")
+
     def tfr(self, band: str) -> Path:
         return self.analysis(f"band-{band}_tfr", ".h5")
 

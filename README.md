@@ -38,6 +38,10 @@ uv run cerca-flux run --config study.yaml --stages tfr source
 uv run cerca-flux slurm --config study.yaml --out slurm/   # one array task per recording
 ```
 
+To compare an Oxford participant with a whole Princeton cohort on the response-locked motor response
+(thick black line vs thin coloured lines, one per participant), and to see how a preprocessing
+option changes it, see **[docs/MOTOR_COMPARISON.md](docs/MOTOR_COMPARISON.md)**.
+
 See **[docs/PIPELINE.md](docs/PIPELINE.md)** for the stage-by-stage description,
 the mapping from each notebook to its function, the output layout, and the
 places where a batch run must deviate from a value the tutorial tuned by eye

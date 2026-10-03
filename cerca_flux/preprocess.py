@@ -66,11 +66,15 @@ def load_raw(ctx: SubjectContext, preload: bool = False) -> mne.io.BaseRaw:
             "Epoching needs trial_type labels."
         )
     # A deterministic label -> code map, identical across subjects, so that
-    # saved epochs can be compared between recordings.
+    # saved epochs can be compared between recordings.  It is frozen from the
+    # *full* recording, before any crop, so a label that happens to be absent
+    # from one subject's analysed span cannot shift the codes of the others.
     ctx.state.setdefault("task_event_labels", labels)
     ctx.state.setdefault(
         "task_event_id", {label: i + 1 for i, label in enumerate(ctx.state["task_event_labels"])}
     )
+
+    raw = _crop_to_analysis_span(ctx, raw)
 
     types = raw.get_channel_types()
     ctx.record(
@@ -83,6 +87,58 @@ def load_raw(ctx: SubjectContext, preload: bool = False) -> mne.io.BaseRaw:
     ctx.logger.info(
         "loaded %s: %.1f s at %.0f Hz, %d magnetometers",
         ctx.rec.key, raw.times[-1], raw.info["sfreq"], ctx.metrics["n_mag"],
+    )
+    return raw
+
+
+def _reference_duration(ctx: SubjectContext) -> float:
+    """Duration (s) of the recording named by ``study.match_duration_to``."""
+    path = ctx.cfg.reference_recording
+    if path is None or not path.exists():
+        raise FileNotFoundError(
+            f"{ctx.rec.key}: study.match_duration_to points at {path}, which does not exist"
+        )
+    reference = mne.io.read_raw(path, preload=False, verbose="ERROR")
+    return float(reference.times[-1])
+
+
+def _crop_to_analysis_span(ctx: SubjectContext, raw: mne.io.BaseRaw) -> mne.io.BaseRaw:
+    """Drop a leading block and cap the span, as the comparison notebook does.
+
+    The notebook removes Princeton's first 400 s (a training block) and keeps only
+    as much of the remainder as the Oxford recording lasts, so both sites feed
+    comparable amounts of data into the ERF and TFR averages.  Events and
+    annotations outside the kept span are dropped by ``crop``.
+    """
+    study = ctx.cfg.study
+    start = float(study.crop_start or 0.0)
+    limits = []
+    if study.crop_duration is not None:
+        limits.append(float(study.crop_duration))
+    reference = None
+    if study.match_duration_to:
+        reference = _reference_duration(ctx)
+        limits.append(reference)
+    if start == 0.0 and not limits:
+        return raw
+
+    full = float(raw.times[-1])
+    available = full - start
+    if available <= 0:
+        raise RuntimeError(
+            f"{ctx.rec.key}: the recording lasts {full:.1f} s, which does not reach "
+            f"study.crop_start ({start:g} s)"
+        )
+    duration = min([available, *limits])
+    raw.crop(tmin=start, tmax=start + duration, include_tmax=False)
+    ctx.record(
+        duration_full_s=full, crop_start_s=start, crop_duration_s=float(raw.times[-1]),
+        reference_duration_s=reference,
+    )
+    ctx.logger.info(
+        "cropped %s to %.1f s starting at %.1f s (full recording %.1f s%s)",
+        ctx.rec.key, duration, start, full,
+        f", reference {reference:.1f} s" if reference is not None else "",
     )
     return raw
 

@@ -1,0 +1,37 @@
+# =============================================================================
+# Princeton TSX cohort (every participant of the full sample)
+# =============================================================================
+# Paths follow the TSX_OPM batch scripts: $TSX_DIR/data/TSX/{raw,bids,freesurfer},
+# with this repository a sibling of data/, mne-opm/ and TSX_OPM/.  TSX_DIR defaults
+# to the folder above this repository; export TSX_DIR to point elsewhere.
+extends: base.yaml
+
+study:
+  site: Princeton
+  bids_root: "${TSX_DIR}/data/TSX/bids"
+  fs_subjects_dir: "${TSX_DIR}/data/TSX/freesurfer"
+  # mne-opm names the FreeSurfer subject sub-<NNN>_ses-<SS> and writes the
+  # coregistration to <subject>/bem/<subject>-trans.fif, which the forward stage
+  # finds on its own.
+  fs_subject_template: "sub-{subject}_ses-{session}"
+  # The 35-subject full sample (della_mne_batch.sh: 7-15, 18-39, 41-44); pilots
+  # 003-005 are excluded.  Quote the labels: YAML reads a bare 007 as 7.
+  subjects: [
+    "007", "008", "009", "010", "011", "012", "013", "014", "015", "018", "019", "020",
+    "021", "022", "023", "024", "025", "026", "027", "028", "029", "030", "031", "032",
+    "033", "034", "035", "036", "037", "038", "039", "041", "042", "043", "044"
+  ]
+  sessions: ["01"]
+  # mne-opm also writes a task-noise (empty-room) file; only the task recording.
+  tasks: ["TSX"]
+  line_freq: 60.0
+  # The notebook removes the first 400 s (training) ...
+  crop_start: 400.0
+  # ... and keeps no more of what remains than the Oxford recording lasts, so both
+  # sites contribute comparable amounts of data.
+  match_duration_to: "${OXFORD_BIDS:-${TSX_DIR}/data/oxford_sub-01/Data/Cerca_Spatt_BIDS}/sub-01/ses-01/meg/sub-01_ses-01_task-SpAtt_run-01_meg.fif"
+
+epochs:
+  conditions:
+    # Princeton: the right-hand response only, as in the notebook.
+    response: [response/right]

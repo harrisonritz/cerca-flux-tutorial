@@ -63,6 +63,10 @@ def _summary_html(ctx: SubjectContext) -> str:
     add("Epochs retained", "epochs_retained")
     add("Epochs rejected (%)", "epochs_rejected_percent", "{:.1f}")
     add("Peak decoding score", "mvpa_peak_score", "{:.3f}")
+    add("Motor: epochs", "motor_n_epochs")
+    add("Motor: peak central ERF SNR", "motor_peak_erf_snr", "{:.1f}")
+    add("Motor: beta rebound (%)", "motor_rebound_beta_percent", "{:.1f}")
+    add("Motor: left-M1 LCMV peak |z|", "motor_lcmv_peak_abs_z", "{:.2f}")
 
     body = "".join(
         f"<tr><td style='padding:2px 12px 2px 0'>{label}</td>"
@@ -86,6 +90,7 @@ _SECTION_BY_PREFIX = {
     "01": "Sensor quality", "02": "Sensor quality", "03": "HFC",
     "04": "Artefacts", "05": "ICA", "06": "Epochs", "07": "ERF",
     "08": "Time-frequency", "09": "Decoding", "10": "Source",
+    "11": "Motor response", "12": "Motor response",
 }
 
 

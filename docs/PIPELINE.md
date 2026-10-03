@@ -46,7 +46,13 @@ stages run is configurable.
 | 12 | `report` | — | `reports/*_report.html`, `*_qc.json` |
 
 Named subsets are available as presets: `full`, `full_no_mvpa`, `preproc`
-(1–5), `sensor` (6–8), `source` (9–11).
+(1–5), `sensor` (6–8), `source` (9–11), and `motor` (see below).
+
+Two further stages are off unless `motor.enabled` is set, and slot in where their inputs
+exist: `motor` (after `mvpa`) summarises the response-locked central RMS ERF and motor beta,
+and `motor_source` (after `source`) extracts left-M1 LCMV/DICS time courses. They feed
+`cerca-flux compare`, which overlays a reference recording on a whole cohort. See
+**[MOTOR_COMPARISON.md](MOTOR_COMPARISON.md)**.
 
 ```bash
 cerca-flux run --config study.yaml --preset preproc
@@ -234,6 +240,20 @@ stage never silently shrinks the report.  Machine-readable metrics go to
 `*_qc.json`.
 
 ---
+
+### Variants, inheritance and overrides
+
+A configuration may `extends:` another YAML file (mappings merge, lists are replaced), use
+`${VAR}` / `${VAR:-default}` in any string, and be adjusted from the command line:
+
+```bash
+cerca-flux run --config site.yaml --variant hfc3 --set hfc.order=3 --set ica.detect_ecg=false
+```
+
+`--variant NAME` writes to `derivatives/<derivatives_name>_NAME`. Stage outputs are cached by
+file existence, so a variant is how two sets of options stay apart. `study.crop_start`,
+`crop_duration` and `match_duration_to` drop a leading block (e.g. training) and cap the
+analysed span.
 
 ## Outputs
 

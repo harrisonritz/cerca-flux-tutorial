@@ -31,9 +31,16 @@ def test_every_recording_completes(completed):
 
 def test_stage_order_is_the_flux_order():
     assert STAGE_NAMES == (
-        "qc", "hfc", "annotate", "ica", "epochs", "erf", "tfr", "mvpa",
-        "forward", "source", "morph", "report",
+        "qc", "hfc", "annotate", "ica", "epochs", "erf", "tfr", "mvpa", "motor",
+        "forward", "source", "motor_source", "morph", "report",
     )
+    # The FLUX stages keep their relative order; the motor stages sit where their
+    # inputs exist (epochs for `motor`, a forward model for `motor_source`).
+    flux = [n for n in STAGE_NAMES if not n.startswith("motor")]
+    assert flux == ["qc", "hfc", "annotate", "ica", "epochs", "erf", "tfr", "mvpa",
+                    "forward", "source", "morph", "report"]
+    assert STAGE_NAMES.index("motor") > STAGE_NAMES.index("epochs")
+    assert STAGE_NAMES.index("motor_source") > STAGE_NAMES.index("forward")
     # Presets must stay in pipeline order whatever order they are requested in.
     assert [s.name for s in resolve_stages(None, ["source", "qc"])] == ["qc", "source"]
     assert set(PRESETS["full"]) == set(STAGE_NAMES)

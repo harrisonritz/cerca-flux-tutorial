@@ -6,6 +6,10 @@ The stage order below *is* the OPM-FLUX recommendation, and it is the order the
     qc -> hfc -> annotate -> ica -> epochs -> erf -> tfr -> mvpa
        -> forward -> source -> morph -> report
 
+Two optional stages for the Oxford-vs-Princeton motor-response overlay are slotted
+in where their inputs exist - ``motor`` (sensor level) after ``mvpa`` and
+``motor_source`` (left M1) after ``source`` - and are off unless ``motor.enabled``.
+
 Each stage reads its input from the previous stage's cached derivative, so any
 suffix of the pipeline can be re-run on its own once the earlier outputs exist.
 """
@@ -34,7 +38,8 @@ class Stage:
     #: A failing required stage stops that subject, because everything after it
     #: depends on its output.  An optional stage only records the failure.
     required: bool = True
-    #: Config section whose ``enabled`` flag switches this stage off.
+    #: Config section whose ``enabled`` flag switches this stage off.  A dotted
+    #: path (``motor.source``) requires every section along it to be enabled.
     switch: str | None = None
 
 
@@ -100,6 +105,18 @@ def _stage_mvpa(ctx: SubjectContext) -> None:
     run_decoding(ctx, _epochs(ctx))
 
 
+def _stage_motor(ctx: SubjectContext) -> None:
+    from .motor import compute_motor_sensor
+
+    compute_motor_sensor(ctx, _epochs(ctx))
+
+
+def _stage_motor_source(ctx: SubjectContext) -> None:
+    from .motor import compute_motor_source
+
+    compute_motor_source(ctx, _epochs(ctx), ctx.cache.get("forwards"))
+
+
 def _stage_forward(ctx: SubjectContext) -> None:
     from .source import build_forward
 
@@ -133,8 +150,12 @@ STAGES: tuple[Stage, ...] = (
     Stage("erf", "Event-related fields", _stage_erf, required=False, switch="erf"),
     Stage("tfr", "Time-frequency power", _stage_tfr, required=False, switch="tfr"),
     Stage("mvpa", "Decoding", _stage_mvpa, required=False, switch="mvpa"),
+    Stage("motor", "Motor-response sensor summary", _stage_motor, required=False,
+          switch="motor"),
     Stage("forward", "Forward model", _stage_forward, required=False, switch="forward"),
     Stage("source", "Beamformer source estimates", _stage_source, required=False, switch="source"),
+    Stage("motor_source", "Left-M1 source time courses", _stage_motor_source, required=False,
+          switch="motor.source"),
     Stage("morph", "Morph to template", _stage_morph, required=False, switch="morph"),
     Stage("report", "Subject report", _stage_report, required=False, switch=None),
 )
@@ -148,6 +169,9 @@ PRESETS: dict[str, tuple[str, ...]] = {
     "preproc": ("qc", "hfc", "annotate", "ica", "epochs", "report"),
     "sensor": ("erf", "tfr", "mvpa", "report"),
     "source": ("forward", "source", "morph", "report"),
+    #: Everything the motor-response overlay needs, and nothing else.
+    "motor": ("qc", "hfc", "annotate", "ica", "epochs", "motor", "forward", "motor_source",
+              "report"),
 }
 
 
@@ -171,8 +195,12 @@ def resolve_stages(preset: str | None, names: list[str] | None) -> list[Stage]:
 def _stage_enabled(cfg: Config, stage: Stage) -> bool:
     if stage.switch is None:
         return True
-    section = getattr(cfg, stage.switch, None)
-    return bool(getattr(section, "enabled", True))
+    section = cfg
+    for part in stage.switch.split("."):
+        section = getattr(section, part, None)
+        if not bool(getattr(section, "enabled", True)):
+            return False
+    return True
 
 
 # --------------------------------------------------------------------------- #

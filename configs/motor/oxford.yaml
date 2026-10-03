@@ -1,0 +1,35 @@
+# =============================================================================
+# Oxford reference participant (oxford_sub-01)
+# =============================================================================
+# The notebook's layout is data/oxford_sub-01/Data/Cerca_Spatt_BIDS; here it is
+# looked for under $TSX_DIR/data.  Set OXFORD_BIDS to the Cerca_Spatt_BIDS folder
+# if it lives elsewhere.
+extends: base.yaml
+
+study:
+  site: Oxford
+  bids_root: "${OXFORD_BIDS:-${TSX_DIR}/data/oxford_sub-01/Data/Cerca_Spatt_BIDS}"
+  fs_subjects_dir: derivatives/Freesurfer      # relative to bids_root
+  fs_subject_template: T1s                     # the notebook's FreeSurfer subject name
+  subjects: ["01"]
+  sessions: ["01"]
+  tasks: ["SpAtt"]
+  line_freq: 50.0
+
+channels:
+  # The two sensor modules documented as faulty in the supplied tutorial, matched
+  # as substrings exactly as the notebook does.
+  bad_sensor_match: substring
+  manual_bads:
+    "01": [B4, H6]
+
+epochs:
+  conditions:
+    # Oxford: the two button presses (two fingers of one hand) are pooled.
+    response: [resp_T, resp_L]
+
+forward:
+  # Oxford ships a forward solution and a BEM but no separate -trans.fif; the
+  # MRI/head transform is read out of the forward solution.
+  trans: "{bids_root}/derivatives/analysis/sub-{subject}/ses-{session}/meg/sub-{subject}_ses-{session}_task-SpAtt_run-01_fwd.fif"
+  bem: "{bids_root}/derivatives/analysis/sub-{subject}/ses-{session}/meg/sub-{subject}_ses-{session}_task-SpAtt_run-01_bem-sol.fif"

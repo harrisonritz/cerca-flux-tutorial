@@ -1,0 +1,130 @@
+# =============================================================================
+# Motor-response comparison: the analysis choices SHARED by every site
+# =============================================================================
+# oxford.yaml and princeton.yaml both `extends:` this file, so a preprocessing
+# option set here (or with `--set`) is applied identically to both sites. That is
+# what makes a change in, say, the HFC order a fair comparison rather than a
+# change at one site only.
+#
+# Every value reproduces what FLUX_Oxford_Princeton_Comparison.ipynb does; where
+# that differs from the cerca_flux default, the default is noted. Try an option
+# without editing this file:
+#
+#   cerca-flux run --config configs/motor/princeton.yaml --preset motor \
+#       --variant hfc3 --set hfc.order=3
+#   cerca-flux run --config configs/motor/oxford.yaml    --preset motor \
+#       --variant hfc3 --set hfc.order=3
+#   cerca-flux compare --reference configs/motor/oxford.yaml \
+#       --cohort configs/motor/princeton.yaml --variant hfc3 --set hfc.order=3
+# =============================================================================
+
+study:
+  # Never shared with a plain `cerca-flux` run: stage outputs are cached by file
+  # existence, so two sets of options must not write to the same folder.
+  # --variant NAME appends _NAME to this.
+  derivatives_name: cerca-flux-motor
+
+# --- 1. Sensor quality ---------------------------------------------------------
+qc:
+  method: robust_mad         # median + 6 scaled MAD within each axis, 1-120 Hz
+  mad_threshold: 6.0
+  psd_n_fft_seconds: 4.0     # notebook: 4 s Welch windows (default is 2 s)
+  flag_flat: false           # notebook flags only high-power outliers (default true)
+
+# --- 2. Homogeneous field correction --------------------------------------------
+hfc:
+  order: 2                   # matches the supplied Oxford FLUX tutorial
+  resample_sfreq: 300.0      # keeps the 110-130 Hz muscle band; both sites at 300 Hz
+  keep_axes: all
+
+# --- 3. Artefact annotation -------------------------------------------------------
+annotate:
+  eog:
+    # SHARED_BLINK_DETECTOR = True in the notebook: blinks come from the frontal
+    # OPM surrogate F9 - F10 at BOTH sites, even though Princeton has native EOG.
+    # (cerca_flux default: prefer_native true.)
+    prefer_native: false
+    threshold: null
+  muscle:
+    filter_freq: [110.0, 130.0]   # notebook band (default 110-140)
+    threshold: 3.0
+
+# --- 4. ICA -----------------------------------------------------------------------
+ica:
+  n_components: 30
+  random_state: 99
+  detect_eog: true
+  eog_threshold: 3.0
+  detect_ecg: false          # the notebook removes ocular components only
+  max_exclude: 3             # ... and at most three
+
+# --- 5. Epochs --------------------------------------------------------------------
+epochs:
+  continuous_l_freq: 0.1
+  continuous_h_freq: 45.0    # notebook filters 0.1-45 Hz before epoching
+  tmin: -1.0
+  tmax: 1.2
+  baseline: null
+  detrend: 1
+  reject:
+    mag: 5.0e-11             # 50 pT; the 10 pT cue-locked value drops nearly every button press
+  picks: all
+  # `conditions` is site-specific and set in oxford.yaml / princeton.yaml.
+
+# --- Stages this comparison does not need ------------------------------------------
+erf:    {enabled: false}
+tfr:    {enabled: false}
+mvpa:   {enabled: false}
+source: {enabled: false, spaces: [surface]}
+morph:  {enabled: false}
+group:  {enabled: false}
+forward:
+  volume: {enabled: false}
+  surface: {enabled: true, spacing: oct6, surface: white, mindist: 5.0, add_dist: false}
+
+# --- The motor-response analysis ----------------------------------------------------
+motor:
+  enabled: true
+  conditions: [response]
+  sensor:
+    sensors: [C1, C2, C3, C4, C5, C6]    # central radial sensors pooled into the RMS
+    min_sensors: 3
+    erf_baseline: [-0.8, -0.6]           # baseline-SD normalisation window
+    erf_active: [-0.1, 0.3]
+    beta_fmin: 15.0
+    beta_fmax: 30.0
+    beta_fstep: 2.0
+    beta_n_cycles_divisor: 2.0           # n_cycles = f / 2 -> 0.5 s windows
+    beta_time_bandwidth: 2.0
+    beta_decim: 2
+    beta_baseline: [-0.9, -0.6]
+    movement_window: [-0.4, 0.1]
+    rebound_window: [0.4, 0.9]
+  source:
+    enabled: true
+    space: surface
+    picks: all                           # notebook as run: X, Y and Z enter the beamformer
+    label: precentral-lh
+    parc: aparc
+    reg: 0.05
+    weight_norm: nai
+    pick_ori: max-power
+    rank: relative
+    cov_tmin: -0.8
+    cov_tmax: 0.8
+    lcmv_baseline: [-0.8, -0.5]
+    lcmv_response: [-0.2, 0.3]
+    dics_fmin: 15.0
+    dics_fmax: 30.0
+    dics_bandwidth: 4.0
+    dics_window: 0.4
+    dics_step: 0.1
+    dics_tmin: -0.75
+    dics_tmax: 1.0
+    dics_baseline: [-0.75, -0.5]
+
+output:
+  report: true
+  figures: true
+  figure_dpi: 150
+  overwrite: false
