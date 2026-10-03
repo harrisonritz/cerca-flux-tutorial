@@ -71,6 +71,9 @@ _PRIMARY = [
     "n_ica_components", "n_ica_excluded",
     "epochs_requested", "epochs_retained", "epochs_rejected_percent",
     "mvpa_peak_score", "mvpa_peak_time_s", "mvpa_n_per_class",
+    "motor_n_epochs", "motor_baseline_rms_fT", "motor_peak_erf_snr",
+    "motor_movement_beta_percent", "motor_rebound_beta_percent",
+    "motor_lcmv_peak_abs_z", "motor_dics_min_db",
 ]
 
 

@@ -33,6 +33,8 @@ class SubjectContext:
     metrics: dict[str, Any] = field(default_factory=dict)
     figures: list[tuple[str, str, Path]] = field(default_factory=list)
     stage_status: dict[str, str] = field(default_factory=dict)
+    #: The input audit watching this recording's reads (see :mod:`cerca_flux.provenance`).
+    audit: Any = None
 
     # -- persisted state -------------------------------------------------- #
 
@@ -71,6 +73,11 @@ class SubjectContext:
         if self.cfg.output.overwrite:
             return True
         return not all(Path(p).exists() for p in outputs)
+
+    def allow_input(self, path: Path) -> None:
+        """Declare a pre-existing file this recording may read (e.g. the coregistration)."""
+        if self.audit is not None:
+            self.audit.allow(path)
 
     def record(self, **metrics: Any) -> None:
         self.metrics.update(metrics)

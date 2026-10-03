@@ -7,6 +7,7 @@ import pytest
 from cerca_flux.config import Config, _build
 from cerca_flux.utils import use_headless_backend
 
+from ._motor_support import RESPONSE_LABELS, motor_config
 from ._synthetic_data import make_synthetic_bids
 from ._synthetic_fs import make_synthetic_freesurfer
 
@@ -66,3 +67,31 @@ def config(synthetic_study) -> Config:
         "morph": {"subject_to": "fsaverage", "volume_zooms": 10.0,
                   "surface_spacing": 4, "fetch_fsaverage": False},
     })
+
+
+@pytest.fixture(scope="session")
+def response_study(tmp_path_factory, synthetic_study):
+    """Synthetic BIDS with response labels; FreeSurfer is shared with the other tests."""
+    _, fs_dir = synthetic_study
+    bids_root = make_synthetic_bids(
+        tmp_path_factory.mktemp("response") / "bids", subjects=("01",), labels=RESPONSE_LABELS
+    )
+    return bids_root, fs_dir
+
+
+@pytest.fixture(scope="session")
+def motor_run(response_study):
+    """The ``motor`` preset run once over the synthetic response-locked recording."""
+    import shutil
+
+    from cerca_flux.paths import SubjectPaths, discover_recordings
+    from cerca_flux.pipeline import resolve_stages, run_subject
+
+    cfg = motor_config(response_study)
+    rec = discover_recordings(cfg)[0]
+    row = run_subject(cfg, rec, resolve_stages("motor", None))
+    # Later tests re-run this recording from cache, which rewrites the manifest with only the
+    # reads *that* run made; keep the manifest of the run that did the computing.
+    paths = SubjectPaths(cfg, rec)
+    shutil.copy(paths.inputs, paths.inputs.with_name("first_run_inputs.json"))
+    return cfg, rec, row

@@ -6,6 +6,10 @@ The stage order below *is* the OPM-FLUX recommendation, and it is the order the
     qc -> hfc -> annotate -> ica -> epochs -> erf -> tfr -> mvpa
        -> forward -> source -> morph -> report
 
+Two optional stages for the Oxford-vs-Princeton motor-response overlay are slotted
+in where their inputs exist - ``motor`` (sensor level) after ``mvpa`` and
+``motor_source`` (left M1) after ``source`` - and are off unless ``motor.enabled``.
+
 Each stage reads its input from the previous stage's cached derivative, so any
 suffix of the pipeline can be re-run on its own once the earlier outputs exist.
 """
@@ -23,7 +27,8 @@ import mne
 from .config import Config, dump_config
 from .context import SubjectContext
 from .paths import Recording, SubjectPaths, discover_recordings
-from .utils import get_logger, setup_logging, use_headless_backend
+from .provenance import audit_inputs
+from .utils import get_logger, setup_logging, use_headless_backend, write_json
 
 
 @dataclass(frozen=True)
@@ -34,7 +39,8 @@ class Stage:
     #: A failing required stage stops that subject, because everything after it
     #: depends on its output.  An optional stage only records the failure.
     required: bool = True
-    #: Config section whose ``enabled`` flag switches this stage off.
+    #: Config section whose ``enabled`` flag switches this stage off.  A dotted
+    #: path (``motor.source``) requires every section along it to be enabled.
     switch: str | None = None
 
 
@@ -100,6 +106,18 @@ def _stage_mvpa(ctx: SubjectContext) -> None:
     run_decoding(ctx, _epochs(ctx))
 
 
+def _stage_motor(ctx: SubjectContext) -> None:
+    from .motor import compute_motor_sensor
+
+    compute_motor_sensor(ctx, _epochs(ctx))
+
+
+def _stage_motor_source(ctx: SubjectContext) -> None:
+    from .motor import compute_motor_source
+
+    compute_motor_source(ctx, _epochs(ctx), ctx.cache.get("forwards"))
+
+
 def _stage_forward(ctx: SubjectContext) -> None:
     from .source import build_forward
 
@@ -133,8 +151,12 @@ STAGES: tuple[Stage, ...] = (
     Stage("erf", "Event-related fields", _stage_erf, required=False, switch="erf"),
     Stage("tfr", "Time-frequency power", _stage_tfr, required=False, switch="tfr"),
     Stage("mvpa", "Decoding", _stage_mvpa, required=False, switch="mvpa"),
+    Stage("motor", "Motor-response sensor summary", _stage_motor, required=False,
+          switch="motor"),
     Stage("forward", "Forward model", _stage_forward, required=False, switch="forward"),
     Stage("source", "Beamformer source estimates", _stage_source, required=False, switch="source"),
+    Stage("motor_source", "Left-M1 source time courses", _stage_motor_source, required=False,
+          switch="motor.source"),
     Stage("morph", "Morph to template", _stage_morph, required=False, switch="morph"),
     Stage("report", "Subject report", _stage_report, required=False, switch=None),
 )
@@ -148,6 +170,9 @@ PRESETS: dict[str, tuple[str, ...]] = {
     "preproc": ("qc", "hfc", "annotate", "ica", "epochs", "report"),
     "sensor": ("erf", "tfr", "mvpa", "report"),
     "source": ("forward", "source", "morph", "report"),
+    #: Everything the motor-response overlay needs, and nothing else.
+    "motor": ("qc", "hfc", "annotate", "ica", "epochs", "motor", "forward", "motor_source",
+              "report"),
 }
 
 
@@ -171,8 +196,12 @@ def resolve_stages(preset: str | None, names: list[str] | None) -> list[Stage]:
 def _stage_enabled(cfg: Config, stage: Stage) -> bool:
     if stage.switch is None:
         return True
-    section = getattr(cfg, stage.switch, None)
-    return bool(getattr(section, "enabled", True))
+    section = cfg
+    for part in stage.switch.split("."):
+        section = getattr(section, part, None)
+        if not bool(getattr(section, "enabled", True)):
+            return False
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -180,24 +209,9 @@ def _stage_enabled(cfg: Config, stage: Stage) -> bool:
 # --------------------------------------------------------------------------- #
 
 
-def run_subject(cfg: Config, rec: Recording, stages: list[Stage],
-                verbose: bool = False) -> dict:
-    """Run the requested stages for one recording and return its summary row.
-
-    Failures are contained: a subject that dies in ICA does not stop the study,
-    and the row it returns says which stage failed and why.
-    """
-    use_headless_backend()
-    mne.set_log_level("ERROR")
-
-    paths = SubjectPaths(cfg, rec)
-    logger = setup_logging(logging.DEBUG if verbose else logging.INFO, paths.log_file)
-    ctx = SubjectContext(cfg=cfg, rec=rec, paths=paths, logger=logger)
-    ctx.load_state()
-
-    logger.info("=" * 72)
-    logger.info("%s: running %s", rec.key, ", ".join(s.name for s in stages))
-
+def _run_stages(ctx: SubjectContext, stages: list[Stage]) -> tuple[str, str]:
+    """Run the stages in order and return ``(status, error)``."""
+    cfg, logger = ctx.cfg, ctx.logger
     status = "ok"
     error = ""
     for stage in stages:
@@ -224,6 +238,40 @@ def run_subject(cfg: Config, rec: Recording, stages: list[Stage],
                 status, error = "partial", f"{stage.name}: {exc}"
         finally:
             ctx.save_state()
+
+    return status, error
+
+
+def run_subject(cfg: Config, rec: Recording, stages: list[Stage],
+                verbose: bool = False) -> dict:
+    """Run the requested stages for one recording and return its summary row.
+
+    Failures are contained: a subject that dies in ICA does not stop the study,
+    and the row it returns says which stage failed and why.
+    """
+    use_headless_backend()
+    mne.set_log_level("ERROR")
+
+    paths = SubjectPaths(cfg, rec)
+    logger = setup_logging(logging.DEBUG if verbose else logging.INFO, paths.log_file)
+    ctx = SubjectContext(cfg=cfg, rec=rec, paths=paths, logger=logger)
+    ctx.load_state()
+
+    logger.info("=" * 72)
+    logger.info("%s: running %s", rec.key, ", ".join(s.name for s in stages))
+
+    # Every file the recording reads is classified; inside provenance.strict anything
+    # but raw BIDS data, the FreeSurfer reconstruction and the declared coregistration
+    # is blocked, so results cannot silently depend on another pipeline's products.
+    with audit_inputs(cfg, rec.key) as audit:
+        ctx.audit = audit
+        status, error = _run_stages(ctx, stages)
+        manifest = audit.manifest()
+    write_json(paths.inputs, manifest)
+    ctx.record(inputs_strict=manifest["strict"], inputs_violations=len(manifest["violations"]))
+    if manifest["violations"]:
+        logger.warning("%s: %d read(s) outside the allowed inputs (see %s)",
+                       rec.key, len(manifest["violations"]), paths.inputs.name)
 
     ctx.save_state()
     row = {

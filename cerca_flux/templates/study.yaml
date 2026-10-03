@@ -33,6 +33,20 @@ study:
   # Mains frequency, used only when the BIDS sidecar does not give one.
   # 50 Hz in the UK/EU, 60 Hz in the Americas.
   line_freq: 50
+  # Optional. Name of the site, used in comparison plots ("Oxford").
+  site: null
+  # Optional. Names one set of analysis choices: outputs then go to
+  # derivatives/<derivatives_name>_<variant>, so options never overwrite each other.
+  # Normally given on the command line:  --variant hfc3
+  variant: null
+  # Optional. Seconds to drop from the start of every recording (a training block),
+  # then keep at most crop_duration seconds, and no more than the duration of the
+  # recording named by match_duration_to (so two sites contribute equal amounts).
+  crop_start: 0.0
+  crop_duration: null
+  match_duration_to: null
+  # A path may use ${VAR} or ${VAR:-default}. TSX_DIR defaults to the folder above
+  # this repository.
 
 channels:
   # Cerca triaxial channels are named "<sensor> <slot> <axis>", e.g. "F9 C8 Z".
@@ -48,6 +62,17 @@ channels:
   # "token" matches the sensor id exactly ("B4" does not match "B41");
   # "substring" reproduces the tutorial's looser matching.
   bad_sensor_match: token
+  # Also treat sensors flagged bad in the BIDS channels.tsv as bad (a recorded decision,
+  # not processing). false = decide every sensor from the raw data alone.
+  use_metadata_bads: true
+
+# --- What this pipeline may read ------------------------------------------------
+# strict: true makes a recording fail if it reads anything but its raw BIDS data, the
+# FreeSurfer reconstruction and one declared coregistration transform (e.g. another
+# pipeline's processed data, BEM solution or forward model). What was read is always
+# written to *_inputs.json. Use it when sites must be processed identically.
+provenance:
+  strict: false
 
 # --- 1. Sensor quality check (A First Look / A2 Sensor Quality checking) ------
 qc:
@@ -300,6 +325,26 @@ morph:
   volume_zooms: 5.0
   surface_spacing: 5         # ico5: ~10242 vertices per hemisphere
   fetch_fsaverage: true      # download it once if missing (needs network access)
+
+# --- 12. Motor response (the Oxford-vs-Princeton overlay) ----------------------
+# Off by default. See docs/MOTOR_COMPARISON.md and configs/motor/ for a worked
+# configuration; enable it and run `cerca-flux run --preset motor`.
+motor:
+  enabled: false
+  conditions: [response]     # names from epochs.conditions, pooled
+  sensor:
+    sensors: [C1, C2, C3, C4, C5, C6]   # central radial sensors pooled into the RMS
+    erf_baseline: [-0.8, -0.6]
+    beta_fmin: 15.0
+    beta_fmax: 30.0
+    beta_baseline: [-0.9, -0.6]
+    movement_window: [-0.4, 0.1]
+    rebound_window: [0.4, 0.9]
+  source:
+    enabled: true
+    space: surface           # must also be listed in source.spaces
+    label: precentral-lh
+    picks: all               # "radial" restricts the beamformer to Z channels
 
 # --- Output and group ----------------------------------------------------------
 output:

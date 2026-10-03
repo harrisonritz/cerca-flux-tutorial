@@ -46,7 +46,13 @@ stages run is configurable.
 | 12 | `report` | — | `reports/*_report.html`, `*_qc.json` |
 
 Named subsets are available as presets: `full`, `full_no_mvpa`, `preproc`
-(1–5), `sensor` (6–8), `source` (9–11).
+(1–5), `sensor` (6–8), `source` (9–11), and `motor` (see below).
+
+Two further stages are off unless `motor.enabled` is set, and slot in where their inputs
+exist: `motor` (after `mvpa`) summarises the response-locked central RMS ERF and motor beta,
+and `motor_source` (after `source`) extracts left-M1 LCMV/DICS time courses. They feed
+`cerca-flux compare`, which overlays a reference recording on a whole cohort. See
+**[MOTOR_COMPARISON.md](MOTOR_COMPARISON.md)**.
 
 ```bash
 cerca-flux run --config study.yaml --preset preproc
@@ -181,10 +187,17 @@ EEG.  Both source spaces are built when configured:
 * **surface**: `oct6` on the white surface (~4098 vertices/hemisphere).
 
 Coregistration is **not** re-fitted.  The transform is located via
-`forward.trans` (templates support `{fs_subject}`, `{subject}`, … and globs) or
-by searching the FreeSurfer `bem/` folder.  A missing transform is a clear
-error, not a silent fallback — verify each coregistration visually before
-trusting a source result.
+`forward.trans` (templates support `{fs_subject}`, `{subject}`, … and globs), in this
+pipeline's own derivatives, or in the FreeSurfer subject's `bem/` folder.  Other pipelines'
+`derivatives/` are never searched, and a `*-bem-sol.fif` that happens to sit in the FreeSurfer
+folder is not reused: the BEM is built from the FreeSurfer surfaces unless `forward.bem` names
+one.  A missing transform is a clear error, not a silent fallback — verify each coregistration
+visually before trusting a source result.  `cerca-flux export-trans` extracts a transform from a
+forward solution once, explicitly, for datasets that ship no `-trans.fif`; `cerca-flux check`
+verifies every recording's inputs before a long run.
+
+With `provenance.strict: true` a recording may read only its raw BIDS data, the FreeSurfer
+reconstruction and the declared transform (see **[MOTOR_COMPARISON.md](MOTOR_COMPARISON.md)**).
 
 The forward model is built for every channel that survived preprocessing and
 narrowed to the analysis picks at stage 10, so one solution serves both the
@@ -234,6 +247,20 @@ stage never silently shrinks the report.  Machine-readable metrics go to
 `*_qc.json`.
 
 ---
+
+### Variants, inheritance and overrides
+
+A configuration may `extends:` another YAML file (mappings merge, lists are replaced), use
+`${VAR}` / `${VAR:-default}` in any string, and be adjusted from the command line:
+
+```bash
+cerca-flux run --config site.yaml --variant hfc3 --set hfc.order=3 --set ica.detect_ecg=false
+```
+
+`--variant NAME` writes to `derivatives/<derivatives_name>_NAME`. Stage outputs are cached by
+file existence, so a variant is how two sets of options stay apart. `study.crop_start`,
+`crop_duration` and `match_duration_to` drop a leading block (e.g. training) and cap the
+analysed span.
 
 ## Outputs
 

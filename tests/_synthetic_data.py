@@ -141,7 +141,7 @@ def _build_raw(rng: np.random.Generator) -> mne.io.RawArray:
     return raw
 
 
-def make_synthetic_bids(out, subjects=("01", "02"), labels=None) -> Path:
+def make_synthetic_bids(out, subjects=("01", "02"), labels=None, task="SpAtt") -> Path:
     """Write the synthetic recording as a BIDS dataset and return its root.
 
     ``labels`` overrides the event descriptions, which lets a test build a
@@ -162,7 +162,7 @@ def make_synthetic_bids(out, subjects=("01", "02"), labels=None) -> Path:
         ))
 
     for subject in subjects:
-        bids_path = mne_bids.BIDSPath(subject=subject, session="01", task="SpAtt",
+        bids_path = mne_bids.BIDSPath(subject=subject, session="01", task=task,
                                       run="01", datatype="meg", root=out)
         mne_bids.write_raw_bids(raw, bids_path, overwrite=True, allow_preload=True,
                                 format="FIF", verbose="ERROR")

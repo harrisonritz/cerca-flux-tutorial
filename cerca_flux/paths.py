@@ -220,6 +220,19 @@ class SubjectPaths:
     def metrics(self) -> Path:
         return self.analysis("qc", ".json")
 
+    @property
+    def inputs(self) -> Path:
+        """Every external file this recording read (see :mod:`cerca_flux.provenance`)."""
+        return self.preprocessing("inputs", ".json")
+
+    @property
+    def motor_sensor(self) -> Path:
+        return self.analysis("motor-sensor", ".npz")
+
+    @property
+    def motor_source(self) -> Path:
+        return self.analysis("motor-source", ".npz")
+
     def tfr(self, band: str) -> Path:
         return self.analysis(f"band-{band}_tfr", ".h5")
 
@@ -285,26 +298,34 @@ def resolve_one(template: str | None, cfg: Config, rec: Recording, fs_subject: s
     return None
 
 
-def find_trans(cfg: Config, rec: Recording, fs_subject: str, paths: SubjectPaths) -> Path | None:
-    """Locate the MRI/head transform produced by coregistration."""
+def find_trans(cfg: Config, rec: Recording, fs_subject: str,
+               paths: SubjectPaths | None) -> Path | None:
+    """Locate the MRI/head transform produced by coregistration.
+
+    The transform is the one input of the forward model that cannot be recomputed
+    here (it comes from aligning the head scan to the MRI), so it is looked for
+    only where it is *declared*: ``forward.trans``, this pipeline's own derivative,
+    or the FreeSurfer subject's ``bem/`` folder, which is where ``mne coreg`` and
+    mne-opm write it.  The rest of the BIDS ``derivatives/`` tree belongs to other
+    pipelines and is never searched.
+    """
     fallbacks = [
-        str(paths.trans),
+        *([str(paths.trans)] if paths is not None else []),
         "{fs_subjects_dir}/{fs_subject}/bem/*-trans.fif",
         "{fs_subjects_dir}/{fs_subject}/bem/*_trans.fif",
-        "{deriv_root}/analysis/sub-{subject}/**/*_trans.fif",
-        "{bids_root}/derivatives/**/sub-{subject}/**/*_trans.fif",
     ]
     return resolve_one(cfg.forward.trans, cfg, rec, fs_subject, fallbacks, "MRI/head transform")
 
 
 def find_bem(cfg: Config, rec: Recording, fs_subject: str, paths: SubjectPaths) -> Path | None:
-    """Locate a precomputed BEM solution, if the study already has one."""
-    fallbacks = [
-        str(paths.bem),
-        "{fs_subjects_dir}/{fs_subject}/bem/*-bem-sol.fif",
-        "{fs_subjects_dir}/{fs_subject}/bem/*_bem-sol.fif",
-    ]
-    return resolve_one(cfg.forward.bem, cfg, rec, fs_subject, fallbacks, "BEM solution")
+    """The BEM solution to reuse: one named by ``forward.bem``, else this pipeline's own.
+
+    A ``*-bem-sol.fif`` that merely happens to sit in the FreeSurfer folder was
+    computed by someone else's pipeline, with their settings, and is *not* picked
+    up: leave ``forward.bem`` unset and the BEM is built from the FreeSurfer
+    surfaces with this study's settings.
+    """
+    return resolve_one(cfg.forward.bem, cfg, rec, fs_subject, [str(paths.bem)], "BEM solution")
 
 
 def check_freesurfer(cfg: Config, fs_subject: str) -> Path:

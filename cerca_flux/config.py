@@ -9,6 +9,8 @@ difference is noted in the field comment.
 """
 
 import dataclasses
+import os
+import re
 import types
 import typing
 from dataclasses import dataclass, field
@@ -21,6 +23,9 @@ class ConfigError(ValueError):
     """Raised when a configuration file cannot be interpreted."""
 
 
+_VARIANT_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]*")
+
+
 # --------------------------------------------------------------------------- #
 # Study-level description
 # --------------------------------------------------------------------------- #
@@ -31,8 +36,23 @@ class StudyConfig:
     """Where the data live and which recordings to process."""
 
     bids_root: str = ""
+    #: Human-readable name of the site or cohort ("Oxford"), used in plot labels.
+    site: str | None = None
     #: Name of the pipeline's folder under ``<bids_root>/derivatives``.
     derivatives_name: str = "cerca-flux"
+    #: Optional suffix naming one set of analysis choices.  Outputs then go to
+    #: ``derivatives/<derivatives_name>_<variant>``, so two preprocessing options
+    #: never overwrite (or silently reuse) each other's cached stages.
+    variant: str | None = None
+    #: Seconds dropped from the start of every recording, e.g. a training block
+    #: that should not enter the analysis.
+    crop_start: float = 0.0
+    #: Seconds kept after ``crop_start``; ``None`` keeps the rest of the recording.
+    crop_duration: float | None = None
+    #: A reference recording (any file ``mne.io.read_raw`` opens; relative paths
+    #: resolve against ``bids_root``).  The analysed span is capped at that
+    #: recording's duration, so two sites contribute comparable amounts of data.
+    match_duration_to: str | None = None
     #: ``None`` discovers every subject in ``participants.tsv`` / the BIDS tree.
     subjects: list[str] | None = None
     sessions: list[str] | None = None
@@ -73,6 +93,10 @@ class ChannelConfig:
     #: ``token`` matches the sensor id exactly (safer); ``substring`` reproduces
     #: the tutorial's ``any(tag in ch_name)`` behaviour.
     bad_sensor_match: str = "token"
+    #: Also treat the sensors flagged ``bad`` in the BIDS ``channels.tsv`` as bad.
+    #: These are recorded decisions (written when the data were converted), not
+    #: signal processing; switch off to decide every sensor from the raw data alone.
+    use_metadata_bads: bool = True
 
 
 # --------------------------------------------------------------------------- #
@@ -359,11 +383,13 @@ class ForwardConfig:
     enabled: bool = True
     #: Template for the MRI/head transform.  ``{fs_subjects_dir}``,
     #: ``{fs_subject}``, ``{subject}``, ``{session}``, ``{bids_root}`` and
-    #: ``{deriv_root}`` are substituted; globs are allowed.  ``None`` searches
-    #: the FreeSurfer ``bem/`` folder for ``*-trans.fif``.
+    #: ``{deriv_root}`` are substituted; globs are allowed.  ``None`` looks only in
+    #: this pipeline's own derivatives and the FreeSurfer subject's ``bem/`` folder
+    #: for ``*-trans.fif``; other pipelines' derivatives are never searched.
     trans: str | None = None
-    #: Template for a precomputed BEM solution.  ``None`` builds one from the
-    #: FreeSurfer surfaces and caches it in derivatives.
+    #: Template for a precomputed BEM solution.  ``None`` (the default, and the only
+    #: setting allowed when ``provenance.strict`` is on) builds one from the
+    #: FreeSurfer surfaces and caches it in this pipeline's derivatives.
     bem: str | None = None
     bem_ico: int = 4
     #: Single-shell model; adequate for MEG, unlike EEG.
@@ -461,6 +487,94 @@ class MorphConfig:
 
 
 # --------------------------------------------------------------------------- #
+# Motor response  (FLUX_Oxford_Princeton_Comparison: response-locked ERF, beta, M1)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class MotorSensorConfig:
+    """Sensor-level summaries of a response-locked epoch set.
+
+    Corresponding sensors do not share polarity or location across participants,
+    so the comparison uses the polarity-invariant RMS over a fixed set of central
+    radial sensors, as the comparison notebook does.
+    """
+
+    #: Sensor ids (first token of the channel name) pooled into the central RMS.
+    sensors: list[str] = field(default_factory=lambda: ["C1", "C2", "C3", "C4", "C5", "C6"])
+    min_sensors: int = 3
+    #: Window whose mean and SD normalise the RMS time course (SD units).
+    erf_baseline: list[float] = field(default_factory=lambda: [-0.8, -0.6])
+    #: Window searched for the peak response.
+    erf_active: list[float] = field(default_factory=lambda: [-0.1, 0.3])
+    #: Motor-beta multitaper: n_cycles = freqs / n_cycles_divisor (0.5 s windows).
+    beta_fmin: float = 15.0
+    beta_fmax: float = 30.0
+    beta_fstep: float = 2.0
+    beta_n_cycles_divisor: float = 2.0
+    beta_time_bandwidth: float = 2.0
+    beta_decim: int = 2
+    #: Percent change is expressed relative to this window's mean power.
+    beta_baseline: list[float] = field(default_factory=lambda: [-0.9, -0.6])
+    #: Movement (beta desynchronisation) and rebound windows.  The source DICS
+    #: filter is built from the CSDs of these two windows.
+    movement_window: list[float] = field(default_factory=lambda: [-0.4, 0.1])
+    rebound_window: list[float] = field(default_factory=lambda: [0.4, 0.9])
+
+
+@dataclass
+class MotorSourceConfig:
+    """Left primary motor cortex source time courses (LCMV and sliding DICS)."""
+
+    enabled: bool = True
+    #: Which forward model to use; it must also be listed in ``source.spaces``.
+    space: str = "surface"
+    #: ``all`` reproduces the notebook as run (X, Y and Z channels enter the
+    #: beamformer even though its text speaks of radial channels); ``radial``
+    #: restricts it to Z.
+    picks: str = "all"
+    #: FreeSurfer label (``<name>-<hemi>``) of the region of interest.
+    label: str = "precentral-lh"
+    parc: str = "aparc"
+    reg: float = 0.05
+    weight_norm: str = "nai"
+    pick_ori: str = "max-power"
+    #: ``relative`` is what the notebook ends up using (tol 1e-5, projections on).
+    rank: str = "relative"
+    reduce_rank: bool = True
+    real_filter: bool = True
+    depth: float | None = None
+    cov_tmin: float = -0.8
+    cov_tmax: float = 0.8
+    cov_method: str = "shrunk"
+    #: LCMV label time course is expressed in SD of this window.
+    lcmv_baseline: list[float] = field(default_factory=lambda: [-0.8, -0.5])
+    #: Window searched for the peak parcel response.
+    lcmv_response: list[float] = field(default_factory=lambda: [-0.2, 0.3])
+    dics_fmin: float = 15.0
+    dics_fmax: float = 30.0
+    dics_bandwidth: float = 4.0
+    #: Sliding window length and step (s); window centres run dics_tmin..dics_tmax.
+    dics_window: float = 0.4
+    dics_step: float = 0.1
+    dics_tmin: float = -0.75
+    dics_tmax: float = 1.0
+    #: Parcel power is expressed in dB relative to window centres in this range.
+    dics_baseline: list[float] = field(default_factory=lambda: [-0.75, -0.5])
+
+
+@dataclass
+class MotorConfig:
+    """Everything the Oxford-vs-Princeton motor-response overlay needs."""
+
+    enabled: bool = False
+    #: Epoch conditions (from ``epochs.conditions``) pooled into the analysis.
+    conditions: list[str] = field(default_factory=lambda: ["response"])
+    sensor: MotorSensorConfig = field(default_factory=MotorSensorConfig)
+    source: MotorSourceConfig = field(default_factory=MotorSourceConfig)
+
+
+# --------------------------------------------------------------------------- #
 # Output / execution
 # --------------------------------------------------------------------------- #
 
@@ -486,6 +600,24 @@ class GroupConfig:
 
 
 @dataclass
+class ProvenanceConfig:
+    """What this pipeline is allowed to read.
+
+    The aim is that every site is processed from its *raw* recordings by this
+    pipeline alone, so that differences between sites are not differences between
+    pipelines.  The only pre-existing files a recording may read are its raw BIDS
+    data (and sidecars), the shared FreeSurfer reconstruction, one declared
+    coregistration transform, and the optional duration reference.
+    """
+
+    #: Fail a recording that reads anything else, e.g. another pipeline's
+    #: ``derivatives/`` (processed data, epochs, forward models, BEM solutions,
+    #: source spaces).  Reads are always recorded in ``*_inputs.json``; this makes
+    #: them an error.
+    strict: bool = False
+
+
+@dataclass
 class Config:
     study: StudyConfig = field(default_factory=StudyConfig)
     channels: ChannelConfig = field(default_factory=ChannelConfig)
@@ -500,6 +632,8 @@ class Config:
     forward: ForwardConfig = field(default_factory=ForwardConfig)
     source: SourceConfig = field(default_factory=SourceConfig)
     morph: MorphConfig = field(default_factory=MorphConfig)
+    motor: MotorConfig = field(default_factory=MotorConfig)
+    provenance: ProvenanceConfig = field(default_factory=ProvenanceConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     group: GroupConfig = field(default_factory=GroupConfig)
 
@@ -508,6 +642,24 @@ class Config:
     def validate(self) -> None:
         if not self.study.bids_root:
             raise ConfigError("study.bids_root is required")
+        if self.study.variant is not None and not _VARIANT_PATTERN.fullmatch(self.study.variant):
+            raise ConfigError(
+                f"study.variant {self.study.variant!r} may only contain letters, digits, "
+                "'.' and '-' (it becomes part of a BIDS derivatives folder name)"
+            )
+        if self.study.crop_start < 0:
+            raise ConfigError("study.crop_start must not be negative")
+        if self.study.crop_duration is not None and self.study.crop_duration <= 0:
+            raise ConfigError("study.crop_duration must be positive")
+        for field_name in ("subjects", "sessions", "tasks", "runs"):
+            values = getattr(self.study, field_name) or []
+            if any(not isinstance(v, str) for v in values):
+                raise ConfigError(
+                    f"study.{field_name} must be quoted strings such as \"007\": YAML reads "
+                    "an unquoted 007 as the number 7, which is a different BIDS label"
+                )
+        self._validate_provenance()
+        self._validate_motor()
         if self.epochs.enabled and not self.epochs.conditions:
             raise ConfigError(
                 "epochs.conditions is required: map each condition name onto the "
@@ -553,6 +705,63 @@ class Config:
                             f"{side!r}, which band {band.name!r} does not define"
                         )
 
+    def _validate_provenance(self) -> None:
+        if not self.provenance.strict:
+            return
+        if self.forward.bem:
+            raise ConfigError(
+                "provenance.strict forbids forward.bem: a precomputed BEM solution was made "
+                "by another pipeline. Leave it unset and the BEM is built from the FreeSurfer "
+                "surfaces with this study's settings."
+            )
+        trans = self.forward.trans or ""
+        if re.search(r"(fwd|bem-sol|-src|epo|ave|raw)\.fif", trans):
+            raise ConfigError(
+                f"provenance.strict: forward.trans {trans!r} looks like a forward, BEM, source-"
+                "space or data file, not a coregistration transform. Extract the transform once "
+                "with `cerca-flux export-trans` and point forward.trans at the *-trans.fif."
+            )
+
+    def _validate_motor(self) -> None:
+        motor = self.motor
+        if not motor.enabled:
+            return
+        known = set(self.epochs.conditions)
+        for name in motor.conditions:
+            if name not in known:
+                raise ConfigError(f"motor condition {name!r} is not in epochs.conditions")
+        sensor = motor.sensor
+        for label, window in (
+            ("erf_baseline", sensor.erf_baseline), ("erf_active", sensor.erf_active),
+            ("beta_baseline", sensor.beta_baseline), ("movement_window", sensor.movement_window),
+            ("rebound_window", sensor.rebound_window),
+            ("source.lcmv_baseline", motor.source.lcmv_baseline),
+            ("source.lcmv_response", motor.source.lcmv_response),
+            ("source.dics_baseline", motor.source.dics_baseline),
+        ):
+            if len(window) != 2 or window[0] >= window[1]:
+                raise ConfigError(f"motor.{label} must be [start, end] with start < end, got {window}")
+        if sensor.beta_fmin >= sensor.beta_fmax:
+            raise ConfigError("motor.sensor.beta_fmin must be below beta_fmax")
+        src = motor.source
+        if not src.enabled:
+            return
+        if src.space not in {"volume", "surface"}:
+            raise ConfigError("motor.source.space must be 'volume' or 'surface'")
+        if src.space not in self.source.spaces:
+            raise ConfigError(
+                f"motor.source.space {src.space!r} must also be listed in source.spaces, "
+                "because the forward stage builds only the spaces listed there"
+            )
+        if src.rank not in {"info", "relative", "none"}:
+            raise ConfigError("motor.source.rank must be 'info', 'relative' or 'none'")
+        if not re.fullmatch(r".+-(lh|rh)", src.label):
+            raise ConfigError(
+                f"motor.source.label {src.label!r} must end in -lh or -rh, e.g. 'precentral-lh'"
+            )
+        if src.dics_step <= 0 or src.dics_window <= 0 or src.dics_tmin > src.dics_tmax:
+            raise ConfigError("motor.source DICS window length/step must be positive and tmin <= tmax")
+
     # -- convenience ------------------------------------------------------ #
 
     @property
@@ -560,8 +769,22 @@ class Config:
         return Path(self.study.bids_root).expanduser().resolve()
 
     @property
+    def derivatives_folder(self) -> str:
+        """Folder name under ``derivatives/``, including the variant suffix."""
+        name = self.study.derivatives_name
+        return f"{name}_{self.study.variant}" if self.study.variant else name
+
+    @property
     def deriv_root(self) -> Path:
-        return self.bids_root / "derivatives" / self.study.derivatives_name
+        return self.bids_root / "derivatives" / self.derivatives_folder
+
+    @property
+    def reference_recording(self) -> Path | None:
+        """The recording whose duration caps the analysed span, if one is set."""
+        if not self.study.match_duration_to:
+            return None
+        path = Path(self.study.match_duration_to).expanduser()
+        return path if path.is_absolute() else (self.bids_root / path).resolve()
 
     @property
     def fs_subjects_dir(self) -> Path:
@@ -623,13 +846,141 @@ def _build(cls, data, path: str = ""):
     return cls(**kwargs)
 
 
-def load_config(path: str | Path, overrides: dict | None = None) -> Config:
-    """Read a YAML study description into a validated :class:`Config`."""
-    path = Path(path).expanduser()
+def default_tsx_root() -> Path:
+    """The folder that holds ``data/``, ``mne-opm/``, ``TSX_OPM/`` and this repository.
+
+    The batch scripts keep the pipeline as a sibling of the other TSX repositories,
+    so the root is the parent of the repository root.
+    """
+    return Path(__file__).resolve().parents[2]
+
+
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _expand_string(text: str, env: dict[str, str], where: str, depth: int = 0) -> str:
+    """Substitute ``${NAME}`` and ``${NAME:-default}`` (defaults may nest).
+
+    A value found in the environment is used verbatim; only a *default* is itself
+    expanded, so a path containing a literal ``${`` in the environment is safe.
+    """
+    if "${" not in text:
+        return text
+    if depth > 8:
+        raise ConfigError(f"{where}: variable expansion is nested too deeply (a cycle?)")
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        start = text.find("${", i)
+        if start < 0:
+            out.append(text[i:])
+            break
+        out.append(text[i:start])
+        j, level = start + 2, 1
+        while j < len(text) and level:
+            level += {"{": 1, "}": -1}.get(text[j], 0)
+            j += 1
+        if level:
+            raise ConfigError(f"{where}: unterminated '${{' in {text!r}")
+        name, has_default, default = text[start + 2:j - 1].partition(":-")
+        name = name.strip()
+        if not _NAME.fullmatch(name):
+            raise ConfigError(f"{where}: {name!r} is not a valid variable name in {text!r}")
+        if env.get(name):
+            out.append(env[name])
+        elif has_default:
+            out.append(_expand_string(default, env, where, depth + 1))
+        else:
+            raise ConfigError(
+                f"{where}: ${{{name}}} is not set. Export {name}, or write ${{{name}:-fallback}} "
+                "in the configuration."
+            )
+        i = j
+    return "".join(out)
+
+
+def expand_variables(value, env: dict[str, str] | None = None, where: str = "<root>"):
+    """Expand ``${VAR}`` references in every string of a nested YAML structure."""
+    if env is None:
+        env = {"TSX_DIR": str(default_tsx_root()), **os.environ}
+    if isinstance(value, str):
+        return _expand_string(value, env, where)
+    if isinstance(value, dict):
+        return {
+            k: expand_variables(v, env, str(k) if where == "<root>" else f"{where}.{k}")
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [expand_variables(v, env, f"{where}[{i}]") for i, v in enumerate(value)]
+    return value
+
+
+def parse_overrides(items: list[str] | None) -> dict:
+    """Turn ``["hfc.order=3", "ica.max_exclude=5"]`` into a nested dict.
+
+    Values are read as YAML, so numbers, booleans, ``null`` and ``[a, b]`` lists
+    work.  Quote subject labels (``'["007"]'``): YAML reads a bare 007 as 7.
+    """
+    out: dict = {}
+    for item in items or []:
+        key, equals, value = item.partition("=")
+        key = key.strip()
+        if not equals or not key:
+            raise ConfigError(f"override {item!r} must look like section.key=value")
+        node = out
+        *parents, leaf = key.split(".")
+        for part in parents:
+            node = node.setdefault(part, {})
+            if not isinstance(node, dict):
+                raise ConfigError(f"override {item!r} conflicts with an earlier override")
+        try:
+            node[leaf] = yaml.safe_load(value)
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"override {item!r}: cannot parse the value ({exc})") from None
+    return out
+
+
+def _read_yaml_tree(path: Path, _seen: tuple[Path, ...] = ()) -> dict:
+    """Read a YAML file, merging every file named in a top-level ``extends:`` first.
+
+    ``extends`` is a path (or list of paths) relative to the file that names it.
+    Later files win, mappings merge key by key and lists are replaced, so a site
+    file can state only what differs from the shared analysis choices.
+    """
+    path = Path(path).expanduser().resolve()
+    if path in _seen:
+        raise ConfigError(f"configuration files extend each other in a cycle: {path}")
     with open(path, encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh) or {}
+        data = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path} must contain a mapping at the top level")
+    parents = data.pop("extends", None)
+    if parents is None:
+        return data
+    merged: dict = {}
+    for parent in [parents] if isinstance(parents, str) else list(parents):
+        parent_path = Path(parent).expanduser()
+        if not parent_path.is_absolute():
+            parent_path = path.parent / parent_path
+        merged = _deep_merge(merged, _read_yaml_tree(parent_path, _seen + (path,)))
+    return _deep_merge(merged, data)
+
+
+def load_config(path: str | Path, overrides: dict | None = None,
+                variant: str | None = None) -> Config:
+    """Read a YAML study description into a validated :class:`Config`.
+
+    ``overrides`` (see :func:`parse_overrides`) win over the file, and ``variant``
+    names a set of analysis choices: it is written to ``study.variant`` so the
+    outputs land in their own derivatives folder.
+    """
+    path = Path(path).expanduser()
+    raw = _read_yaml_tree(path)
     if overrides:
         raw = _deep_merge(raw, overrides)
+    if variant:
+        raw = _deep_merge(raw, {"study": {"variant": variant}})
+    raw = expand_variables(raw)
     cfg = _build(Config, raw)
     # A relative bids_root is interpreted relative to the config file, so a
     # study directory can be moved without editing the YAML.

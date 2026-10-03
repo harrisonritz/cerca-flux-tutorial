@@ -1,0 +1,106 @@
+# =============================================================================
+# PREPROCESSING - identical for every site (Oxford and Princeton both extend this)
+# =============================================================================
+# Every preprocessing setting of the cerca_flux pipeline is listed here, in pipeline
+# order, so that nothing that shapes the data is hidden in code.  Each line says
+# whether the value is the Cerca default or was CHANGED for this comparison, and what
+# the default is:
+#
+#     order: 2       # [= Cerca default]
+#     resample_sfreq: 300.0    # [CHANGED from Cerca default: null] why
+#
+# Three ways to change a step (the Oxford and Princeton runs then change together):
+#
+#   1. one-off, from the command line - no file edited:
+#        cerca-flux run --config configs/motor/princeton.yaml --preset motor \
+#            --variant hfc3 --set hfc.order=3
+#   2. permanently: edit the value below.  Keep the marker honest (a test checks it).
+#   3. back to the Cerca default: set the value to the default shown on its line.
+#
+# `--variant NAME` keeps each set of options in its own derivatives folder, so results
+# are never mixed.  See what differs from the Cerca defaults at any time with
+#        cerca-flux settings --config configs/motor/princeton.yaml --changed
+#
+# Not here, because they legitimately differ between sites and live in oxford.yaml /
+# princeton.yaml: channels.manual_bads, channels.bad_sensor_match, epochs.conditions.
+# =============================================================================
+
+# --- BAD SENSORS -------------------------------------------------------------------
+channels:
+  radial_axis: Z                               # [= Cerca default] axis treated as radial: the OPM analogue of a SQUID magnetometer
+  axes: [X, Y, Z]                              # [= Cerca default] measurement axes of a triaxial sensor
+  exclude_name_prefixes: [BNC]                 # [= Cerca default] channels starting with these are never treated as OPMs
+  use_metadata_bads: true                      # [= Cerca default] also treat sensors flagged bad in the BIDS channels.tsv as bad (a recorded decision, not processing); false = decide from the raw data alone
+
+# --- 1. SENSOR QUALITY CHECK  (before HFC: a noisy sensor would be smeared across the array) ---
+qc:
+  enabled: true                                # [= Cerca default] false skips the automatic check (manual and metadata bads still apply)
+  method: robust_mad                           # [= Cerca default] robust_mad = median + k.MAD within each axis | fixed_db = the tutorial's 39.1 dB cut | none
+  mad_threshold: 6.0                           # [= Cerca default] k, in scaled MADs above the axis median
+  fixed_db_threshold: 39.1                     # [= Cerca default] used only when method is fixed_db
+  flag_flat: false                             # [CHANGED from Cerca default: true] notebook flags only high-power outliers. also flag abnormally quiet (flat/dead) sensors
+  flat_mad_threshold: 6.0                      # [= Cerca default] scaled MADs below the axis median
+  psd_fmin: 1.0                                # [= Cerca default] quality PSD band (Hz)
+  psd_fmax: 120.0                              # [= Cerca default]
+  psd_n_fft_seconds: 4.0                       # [CHANGED from Cerca default: 2.0] notebook: 4 s Welch windows. Welch window (s); 2 s gives 0.5 Hz resolution
+  psd_tmin: 30.0                               # [= Cerca default] start (s) of the stretch used for the quality PSD
+  psd_span: 120.0                              # [= Cerca default] its length (s)
+  first_look_tmin: 40.0                        # [= Cerca default] start (s) of the 'first look' RMS window
+  first_look_span: 10.0                        # [= Cerca default] its length (s)
+
+# --- 2. HOMOGENEOUS FIELD CORRECTION -----------------------------------------------
+hfc:
+  enabled: true                                # [= Cerca default] false skips the projection (diagnostics are still written)
+  order: 2                                     # [= Cerca default] spherical-harmonic order of the homogeneous-field model; higher removes more interference but risks attenuating brain signal
+  resample_sfreq: 300.0                        # [CHANGED from Cerca default: null] both sites at 300 Hz; keeps the 110-130 Hz muscle band. resample (Hz) before HFC to bound memory; must exceed 2x the muscle band's upper edge. null keeps the BIDS rate
+  keep_axes: all                               # [= Cerca default] all = keep X/Y/Z through HFC | radial = drop to Z afterwards
+
+# --- 3. ARTEFACT ANNOTATION  (segments are marked, not removed; epoching decides) ---
+annotate:
+  enabled: true                                # [= Cerca default] false skips both detectors
+  eog:
+    enabled: true                              # [= Cerca default] blink detection
+    prefer_native: false                       # [CHANGED from Cerca default: true] notebook SHARED_BLINK_DETECTOR: frontal OPM surrogate at both sites. true = use a recorded EOG channel when there is one | false = always the frontal OPM surrogate
+    surrogate_left: F9                         # [= Cerca default] surrogate = radial(left) - radial(right)
+    surrogate_right: F10                       # [= Cerca default]
+    surrogate_name: OCC                        # [= Cerca default] name given to the surrogate channel
+    l_freq: 1.0                                # [= Cerca default] detection band (Hz)
+    h_freq: 10.0                               # [= Cerca default]
+    threshold: null                            # [= Cerca default] tesla; null = MNE's adaptive threshold (the tutorial used 3.0e-12 by eye)
+    window: 0.5                                # [= Cerca default] annotated span (s) centred on each blink
+    description: BAD_blink                     # [= Cerca default] annotation label
+  muscle:
+    enabled: true                              # [= Cerca default] muscle detection
+    threshold: 3.0                             # [= Cerca default] z-score of the band-limited envelope
+    filter_freq: [110.0, 130.0]                # [CHANGED from Cerca default: [110.0, 140.0]] notebook band. band (Hz); keep its upper edge well below Nyquist
+    min_length_good: 0.1                       # [= Cerca default] shortest good stretch (s) kept between bad ones
+
+# --- 4. ICA  (components are selected automatically; inspect the saved figures) ----
+ica:
+  enabled: true                                # [= Cerca default] false skips the decomposition and removal
+  method: fastica                              # [= Cerca default] ICA algorithm
+  n_components: 30                             # [= Cerca default] PCA dimensionality (an int) or variance kept (a float < 1); clamped to the rank left after HFC
+  random_state: 99                             # [CHANGED from Cerca default: 96] notebook seed. seed
+  max_iter: 500                                # [= Cerca default]
+  fit_l_freq: 3.0                              # [= Cerca default] the decomposition is fitted on a copy band-passed to this range (Hz) ...
+  fit_h_freq: 30.0                             # [= Cerca default]
+  fit_sfreq: 250.0                             # [= Cerca default] ... and resampled to this rate; the unmixing is applied to the full-rate data
+  detect_eog: true                             # [= Cerca default] select components correlated with the ocular channel
+  eog_threshold: 3.0                           # [= Cerca default] z-score threshold for that correlation
+  detect_ecg: false                            # [CHANGED from Cerca default: true] notebook removes ocular components only. select components phase-locked to a cardiac signal synthesised from the sensors (CTPS)
+  ecg_threshold: auto                          # [= Cerca default] 'auto' or a z-score
+  max_exclude: 3                               # [CHANGED from Cerca default: 5] notebook removes at most three. cap on removed components (the tutorial reports 2-5 per participant)
+
+# --- 5. EPOCHING  (saved broadband and un-baselined; each analysis chooses its own baseline) ---
+epochs:
+  enabled: true                                # [= Cerca default]
+  continuous_l_freq: 0.1                       # [= Cerca default] the continuous data are filtered once (Hz) before epoching, so filter edges fall outside the epochs
+  continuous_h_freq: 45.0                      # [CHANGED from Cerca default: null] notebook filters 0.1-45 Hz before epoching. null keeps the gamma band; 45 Hz removes it
+  tmin: -1.0                                   # [CHANGED from Cerca default: -0.75] response-locked epoch. epoch start relative to the event (s)
+  tmax: 1.2                                    # [CHANGED from Cerca default: 2.0] response-locked epoch. epoch end (s)
+  baseline: null                               # [= Cerca default] null defers baseline correction to each analysis
+  detrend: 1                                   # [= Cerca default] 0 = constant, 1 = linear, null = none (per epoch)
+  reject:
+    mag: 5.0e-11                               # [CHANGED from Cerca default: 1.0e-11] 50 pT; the 10 pT cue-locked value drops nearly every button press. peak-to-peak rejection in tesla (10 pT = 1.0e-11)
+  reject_by_annotation: true                   # [= Cerca default] drop epochs overlapping BAD_* annotations
+  picks: all                                   # [= Cerca default] channels kept in the saved epochs
