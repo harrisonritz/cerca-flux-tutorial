@@ -93,6 +93,10 @@ class ChannelConfig:
     #: ``token`` matches the sensor id exactly (safer); ``substring`` reproduces
     #: the tutorial's ``any(tag in ch_name)`` behaviour.
     bad_sensor_match: str = "token"
+    #: Also treat the sensors flagged ``bad`` in the BIDS ``channels.tsv`` as bad.
+    #: These are recorded decisions (written when the data were converted), not
+    #: signal processing; switch off to decide every sensor from the raw data alone.
+    use_metadata_bads: bool = True
 
 
 # --------------------------------------------------------------------------- #
@@ -379,11 +383,13 @@ class ForwardConfig:
     enabled: bool = True
     #: Template for the MRI/head transform.  ``{fs_subjects_dir}``,
     #: ``{fs_subject}``, ``{subject}``, ``{session}``, ``{bids_root}`` and
-    #: ``{deriv_root}`` are substituted; globs are allowed.  ``None`` searches
-    #: the FreeSurfer ``bem/`` folder for ``*-trans.fif``.
+    #: ``{deriv_root}`` are substituted; globs are allowed.  ``None`` looks only in
+    #: this pipeline's own derivatives and the FreeSurfer subject's ``bem/`` folder
+    #: for ``*-trans.fif``; other pipelines' derivatives are never searched.
     trans: str | None = None
-    #: Template for a precomputed BEM solution.  ``None`` builds one from the
-    #: FreeSurfer surfaces and caches it in derivatives.
+    #: Template for a precomputed BEM solution.  ``None`` (the default, and the only
+    #: setting allowed when ``provenance.strict`` is on) builds one from the
+    #: FreeSurfer surfaces and caches it in this pipeline's derivatives.
     bem: str | None = None
     bem_ico: int = 4
     #: Single-shell model; adequate for MEG, unlike EEG.
@@ -594,6 +600,24 @@ class GroupConfig:
 
 
 @dataclass
+class ProvenanceConfig:
+    """What this pipeline is allowed to read.
+
+    The aim is that every site is processed from its *raw* recordings by this
+    pipeline alone, so that differences between sites are not differences between
+    pipelines.  The only pre-existing files a recording may read are its raw BIDS
+    data (and sidecars), the shared FreeSurfer reconstruction, one declared
+    coregistration transform, and the optional duration reference.
+    """
+
+    #: Fail a recording that reads anything else, e.g. another pipeline's
+    #: ``derivatives/`` (processed data, epochs, forward models, BEM solutions,
+    #: source spaces).  Reads are always recorded in ``*_inputs.json``; this makes
+    #: them an error.
+    strict: bool = False
+
+
+@dataclass
 class Config:
     study: StudyConfig = field(default_factory=StudyConfig)
     channels: ChannelConfig = field(default_factory=ChannelConfig)
@@ -609,6 +633,7 @@ class Config:
     source: SourceConfig = field(default_factory=SourceConfig)
     morph: MorphConfig = field(default_factory=MorphConfig)
     motor: MotorConfig = field(default_factory=MotorConfig)
+    provenance: ProvenanceConfig = field(default_factory=ProvenanceConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     group: GroupConfig = field(default_factory=GroupConfig)
 
@@ -633,6 +658,7 @@ class Config:
                     f"study.{field_name} must be quoted strings such as \"007\": YAML reads "
                     "an unquoted 007 as the number 7, which is a different BIDS label"
                 )
+        self._validate_provenance()
         self._validate_motor()
         if self.epochs.enabled and not self.epochs.conditions:
             raise ConfigError(
@@ -678,6 +704,23 @@ class Config:
                             f"DICS contrast {contrast.name!r} refers to window "
                             f"{side!r}, which band {band.name!r} does not define"
                         )
+
+    def _validate_provenance(self) -> None:
+        if not self.provenance.strict:
+            return
+        if self.forward.bem:
+            raise ConfigError(
+                "provenance.strict forbids forward.bem: a precomputed BEM solution was made "
+                "by another pipeline. Leave it unset and the BEM is built from the FreeSurfer "
+                "surfaces with this study's settings."
+            )
+        trans = self.forward.trans or ""
+        if re.search(r"(fwd|bem-sol|-src|epo|ave|raw)\.fif", trans):
+            raise ConfigError(
+                f"provenance.strict: forward.trans {trans!r} looks like a forward, BEM, source-"
+                "space or data file, not a coregistration transform. Extract the transform once "
+                "with `cerca-flux export-trans` and point forward.trans at the *-trans.fif."
+            )
 
     def _validate_motor(self) -> None:
         motor = self.motor

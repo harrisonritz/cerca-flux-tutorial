@@ -19,7 +19,8 @@ metrics table.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+import textwrap
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +29,9 @@ import pandas as pd
 from .config import Config
 from .motor import load_motor_result
 from .paths import SubjectPaths, discover_recordings
+from .provenance import (
+    ProvenanceError, fingerprints, settings_differences, settings_vs_defaults,
+)
 from .utils import get_logger, read_json, use_headless_backend
 
 REFERENCE_COLOUR = "black"
@@ -87,6 +91,12 @@ class Entry:
     source: dict | None = None
     status: str = "ok"
     note: str = ""
+    #: ``fingerprint_shared`` / ``fingerprint_site`` the results were made with.
+    stamp: dict = field(default_factory=dict)
+    #: Summary of the recording's input audit (``None`` if it was never audited).
+    inputs: dict | None = None
+    #: What preprocessing did to this recording (bad sensors, ICA, epochs kept, ...).
+    run: dict = field(default_factory=dict)
 
     @property
     def usable(self) -> bool:
@@ -140,6 +150,12 @@ def collect(cfg: Config, group: str) -> list[Entry]:
             entry.sensor = load_motor_result(paths.motor_sensor)
         if paths.motor_source.exists():
             entry.source = load_motor_result(paths.motor_source)
+        for data in (entry.sensor, entry.source):
+            if data is not None and not entry.stamp:
+                entry.stamp = {k: v for k, v in data["metrics"].items()
+                               if k in ("fingerprint_shared", "fingerprint_site")}
+        entry.inputs = _inputs_summary(paths)
+        entry.run = _run_metrics(paths)
         if not entry.usable:
             entry.status, entry.note = "no motor output", _why_missing(paths)
         elif entry.sensor is None:
@@ -148,6 +164,106 @@ def collect(cfg: Config, group: str) -> list[Entry]:
             entry.status, entry.note = "no source output", _why_missing(paths, "motor_source")
         entries.append(entry)
     return entries
+
+
+#: Per-recording outcomes of the preprocessing, shown next to the motor measures so that a
+#: change of preprocessing can be read off both the curves and what it did to the data.
+RUN_METRICS = (
+    "duration_full_s", "crop_start_s", "duration_s", "reference_duration_s", "sfreq_raw",
+    "n_bad_channels", "n_auto_bad_channels", "n_hfc_projections", "hfc_reduction_1_40_db",
+    "blinks_per_min", "muscle_percent", "n_ica_components", "n_ica_excluded",
+    "epochs_requested", "epochs_retained", "epochs_rejected_percent",
+)
+
+
+def _run_metrics(paths: SubjectPaths) -> dict:
+    if not paths.metrics.exists():
+        return {}
+    stored = read_json(paths.metrics).get("metrics", {})
+    return {key: stored[key] for key in RUN_METRICS if key in stored}
+
+
+def _inputs_summary(paths: SubjectPaths) -> dict | None:
+    if not paths.inputs.exists():
+        return None
+    manifest = read_json(paths.inputs)
+    # The transform is persisted with the recording's state: the manifest describes the
+    # latest run, and a cached re-run never opens a transform it did not need.
+    state_file = paths.preprocessing("state", ".json")
+    state = read_json(state_file).get("state", {}) if state_file.exists() else {}
+    return {
+        "inputs_strict": bool(manifest.get("strict")),
+        "inputs_violations": len(manifest.get("violations", [])),
+        "inputs_transform": Path(state["trans"]).name if state.get("trans") else "",
+    }
+
+
+def verify_provenance(reference: list[Entry], cohort: list[Entry], reference_cfg: Config,
+                      cohort_cfg: Config) -> None:
+    """Take results out of the comparison unless they are provably comparable.
+
+    A result is excluded, with the reason recorded, when it
+
+    * carries no settings stamp (made before stamping existed),
+    * is **stale**: made with different settings than its site's current configuration
+      (stages are cached by file existence, so changing an option without
+      ``--overwrite`` or a new ``--variant`` silently reuses old results),
+    * was made with different *shared* preprocessing settings than the reference, or
+    * read files outside the allowed inputs (raw BIDS, the FreeSurfer reconstruction,
+      the declared coregistration) or was never input-audited.
+    """
+    current = {"reference": fingerprints(reference_cfg), "cohort": fingerprints(cohort_cfg)}
+    reference_shared = {e.stamp.get("fingerprint_shared") for e in reference if e.usable}
+    reference_shared = next(iter(reference_shared)) if len(reference_shared) == 1 else None
+    for entry in reference + cohort:
+        if not entry.usable:
+            continue
+        now = current[entry.group]
+        if not entry.stamp:
+            problem = ("no settings stamp", "made before settings were recorded; re-run with "
+                       "--overwrite")
+        elif entry.stamp != now:
+            problem = ("stale results", "made with different settings than the current "
+                       "configuration; re-run with --overwrite or give it a new --variant")
+        elif (entry.group == "cohort" and reference_shared is not None
+              and entry.stamp["fingerprint_shared"] != reference_shared):
+            problem = ("different preprocessing", "its shared preprocessing settings differ from "
+                       f"the reference's (fingerprint {entry.stamp['fingerprint_shared']} vs "
+                       f"{reference_shared})")
+        elif entry.inputs is None:
+            problem = ("no input audit", "no *_inputs.json: re-run the recording")
+        elif entry.inputs["inputs_violations"]:
+            problem = ("inputs outside the allowed set", "it read files other than raw BIDS data, "
+                       "the FreeSurfer reconstruction and the declared coregistration; see "
+                       "*_inputs.json")
+        else:
+            continue
+        entry.status, entry.note = problem
+        entry.sensor = entry.source = None
+
+
+def provenance_footer(reference: list[Entry], cohort: list[Entry], cohort_cfg: Config,
+                      checked: bool, width: int = 190) -> str:
+    """Text for the bottom of a figure: what was held fixed, and what was changed."""
+    shown = [e for e in reference + cohort if e.usable]
+    if checked:
+        enforced = sum(1 for e in shown if e.inputs and e.inputs["inputs_strict"]
+                       and not e.inputs["inputs_violations"])
+        lines = [
+            "Same preprocessing at both sites (shared-settings fingerprint "
+            f"{fingerprints(cohort_cfg)['fingerprint_shared']}). Inputs: raw BIDS recordings, the "
+            "FreeSurfer reconstruction and the coregistration transform only; the BEM, source "
+            f"space and forward model are rebuilt here. Input audit enforced for {enforced} of "
+            f"{len(shown)} recordings."
+        ]
+    else:
+        lines = ["PROVENANCE CHECKS OFF (--allow-mismatch): the two sites may not share "
+                 "preprocessing settings, and results may be stale."]
+    changed = [f"{k}={v}" for k, v, _, differs in settings_vs_defaults(cohort_cfg) if differs]
+    if changed:
+        lines.append("Changed from the Cerca defaults: " + " · ".join(changed))
+    wrapped = [w for line in lines for w in textwrap.wrap(line, width)]
+    return "\n".join(wrapped[:6] + (["..."] if len(wrapped) > 6 else []))
 
 
 def _why_missing(paths: SubjectPaths, stage: str | None = None) -> str:
@@ -222,7 +338,8 @@ def _style_axes(ax) -> None:
 
 
 def plot_overlay(reference: list[Entry], cohort: list[Entry], colours: dict[str, tuple],
-                 names: tuple[str, str], variant: str, path: Path, dpi: int) -> Path:
+                 names: tuple[str, str], variant: str, path: Path, dpi: int,
+                 footer: str = "") -> Path:
     """The composite figure: every measure on one axis per measure."""
     import matplotlib.pyplot as plt
     from matplotlib.colors import BoundaryNorm, ListedColormap
@@ -300,6 +417,8 @@ def plot_overlay(reference: list[Entry], cohort: list[Entry], colours: dict[str,
 
     fig.suptitle(f"Motor response: {ref_name} (thick black) vs {cohort_name} (thin lines)"
                  f"    [variant: {variant}]", fontsize=12.5, color=INK, x=0.01, ha="left")
+    if footer:
+        fig.text(0.005, -0.008, footer, va="top", ha="left", fontsize=8, color=INK_MUTED)
     return _save(fig, path, dpi)
 
 
@@ -399,6 +518,9 @@ def metrics_table(names: tuple[str, str], entries: list[Entry]) -> pd.DataFrame:
         for data in (entry.sensor, entry.source):
             if data is not None:
                 row.update(data["metrics"])
+        row.update(entry.run)
+        row.update(entry.stamp)
+        row.update(entry.inputs or {})
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -415,8 +537,15 @@ def default_output_dir(cfg: Config) -> Path:
 
 
 def compare_motor(reference_cfg: Config, cohort_cfg: Config, out_dir: Path | None = None,
-                  small_multiples: bool = True) -> dict[str, Path]:
-    """Draw the overlay figures and write the metrics table; returns what was written."""
+                  small_multiples: bool = True, check_provenance: bool = True) -> dict[str, Path]:
+    """Draw the overlay figures and write the metrics table; returns what was written.
+
+    With ``check_provenance`` (the default) the comparison is only drawn between
+    results that provably share their preprocessing: the two configurations must agree on
+    every shared setting, and each result must carry matching settings stamps and a clean
+    input audit (see :func:`verify_provenance`).  Anything that does not is left out and
+    listed, with the reason, in the figure and the metrics table.
+    """
     use_headless_backend()
     logger = get_logger()
     if reference_cfg.study.variant != cohort_cfg.study.variant:
@@ -429,8 +558,21 @@ def compare_motor(reference_cfg: Config, cohort_cfg: Config, out_dir: Path | Non
     out_dir = Path(out_dir) if out_dir else default_output_dir(cohort_cfg)
     dpi = cohort_cfg.output.figure_dpi
 
+    differences = settings_differences(reference_cfg, cohort_cfg)
+    if differences:
+        listing = "; ".join(f"{k}: {a!r} vs {b!r}" for k, a, b in differences)
+        if check_provenance:
+            raise ProvenanceError(
+                "the two sites are not processed identically - their configurations disagree on "
+                f"shared preprocessing settings ({listing}). Both site files should extend the "
+                "same preprocessing file; use --allow-mismatch to draw it anyway."
+            )
+        logger.warning("the two configurations differ in shared settings: %s", listing)
+
     reference = collect(reference_cfg, "reference")
     cohort = collect(cohort_cfg, "cohort")
+    if check_provenance:
+        verify_provenance(reference, cohort, reference_cfg, cohort_cfg)
     if not any(e.usable for e in reference):
         raise RuntimeError(
             f"no motor results for the reference under {reference_cfg.deriv_root}. Run "
@@ -444,12 +586,14 @@ def compare_motor(reference_cfg: Config, cohort_cfg: Config, out_dir: Path | Non
         )
 
     colours = cohort_colours([e.label for e in cohort])
+    tag = f"{variant} · settings {fingerprints(cohort_cfg)['fingerprint_shared']}"
+    footer = provenance_footer(reference, cohort, cohort_cfg, check_provenance)
     outputs: dict[str, Path] = {}
-    outputs["overlay"] = plot_overlay(reference, cohort, colours, names, variant,
-                                      out_dir / "motor_response_overlay.png", dpi)
+    outputs["overlay"] = plot_overlay(reference, cohort, colours, names, tag,
+                                      out_dir / "motor_response_overlay.png", dpi, footer)
     if small_multiples:
         for measure in MEASURES:
-            path = plot_small_multiples(measure, reference, cohort, colours, names, variant,
+            path = plot_small_multiples(measure, reference, cohort, colours, names, tag,
                                         out_dir / f"motor_response_small_multiples_{measure.key}.png",
                                         dpi)
             if path is not None:

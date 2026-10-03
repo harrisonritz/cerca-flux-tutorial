@@ -26,6 +26,7 @@ from mne.beamformer import apply_dics_csd, apply_lcmv, make_dics, make_lcmv
 from mne.time_frequency import csd_multitaper
 
 from .context import SubjectContext
+from .provenance import fingerprints
 from .utils import axis_of, resolve_picks, save_figure, sensor_id, timed
 
 _TINY = np.finfo(float).tiny
@@ -44,6 +45,21 @@ def _window_mask(times: np.ndarray, window, what: str) -> np.ndarray:
             f"({times[0]:.2f} to {times[-1]:.2f} s)"
         )
     return mask
+
+
+def _as_real(values, what: str, tol: float = 1e-8) -> np.ndarray:
+    """A real array from a possibly complex-typed one, refusing to discard real information.
+
+    Beamformer output can be complex-typed although its imaginary part is zero.  A
+    silent cast would hide it if that ever stopped being true.
+    """
+    values = np.asarray(values)
+    if not np.iscomplexobj(values):
+        return values
+    scale = max(float(np.abs(values.real).max()), np.finfo(float).tiny)
+    if float(np.abs(values.imag).max()) > tol * scale:
+        raise RuntimeError(f"{what} has a non-negligible imaginary part; refusing to discard it")
+    return values.real.copy()
 
 
 def _pool_conditions(ctx: SubjectContext, epochs: mne.Epochs) -> mne.Epochs:
@@ -183,6 +199,7 @@ def compute_motor_sensor(ctx: SubjectContext, epochs: mne.Epochs | None = None) 
         "tfr_freqs": tfr.freqs, "tfr_times": tfr.times, "tfr_percent": percent,
         "beta_percent": beta, "channels": np.asarray(names),
     }
+    metrics.update(fingerprints(ctx.cfg))  # which settings made this result
     _save_result(out_file, arrays, metrics)
     ctx.record(**metrics)
     ctx.logger.info(
@@ -307,7 +324,10 @@ def compute_motor_source(ctx: SubjectContext, epochs: mne.Epochs | None = None,
         )
         stc = apply_lcmv(work.average(), lcmv, verbose="ERROR")
     lcmv_times = stc.times
-    course = mne.extract_label_time_course(stc, [label], src, mode="mean_flip", verbose="ERROR")[0]
+    course = _as_real(
+        mne.extract_label_time_course(stc, [label], src, mode="mean_flip", verbose="ERROR")[0],
+        "the LCMV label time course",
+    )
     base = _window_mask(lcmv_times, src_cfg.lcmv_baseline, "motor.source.lcmv_baseline")
     lcmv_z = (course - course[base].mean()) / max(float(course[base].std()), np.finfo(float).eps)
     response = np.flatnonzero(_window_mask(lcmv_times, src_cfg.lcmv_response,
@@ -331,7 +351,10 @@ def compute_motor_source(ctx: SubjectContext, epochs: mne.Epochs | None = None,
             depth=src_cfg.depth, rank=rank, verbose="ERROR",
         )
 
-        n_centres = int(round((src_cfg.dics_tmax - src_cfg.dics_tmin) / src_cfg.dics_step)) + 1
+        # Window centres from dics_tmin in steps, never past dics_tmax (the notebook's
+        # np.arange(-0.75, 1.001, 0.1) ends at 0.95, not 1.05). Flooring, not rounding.
+        n_centres = int(np.floor((src_cfg.dics_tmax - src_cfg.dics_tmin) / src_cfg.dics_step
+                                 + 1e-9)) + 1
         centres = src_cfg.dics_tmin + src_cfg.dics_step * np.arange(n_centres)
         half, tol = src_cfg.dics_window / 2, 1e-6
         centres_used, power = [], []
@@ -346,8 +369,10 @@ def compute_motor_source(ctx: SubjectContext, epochs: mne.Epochs | None = None,
             stc_window, _ = apply_dics_csd(
                 csd_for(max(lo, work.tmin), min(hi, work.tmax)), dics, verbose="ERROR"
             )
-            power.append(float(mne.extract_label_time_course(
-                stc_window, [label], src, mode="pca_flip", verbose="ERROR")[0, 0]))
+            # Keep the value as returned (DICS power can be complex-typed with a zero
+            # imaginary part); ``float()`` would silently drop an imaginary part.
+            power.append(mne.extract_label_time_course(
+                stc_window, [label], src, mode="pca_flip", verbose="ERROR")[0, 0])
             centres_used.append(float(centre))
     centres_used, signed_power = np.asarray(centres_used), np.asarray(power)
     if centres_used.size == 0:
@@ -355,7 +380,7 @@ def compute_motor_source(ctx: SubjectContext, epochs: mne.Epochs | None = None,
     # ``pca_flip`` returns a signed scalar, but power is non-negative: its sign is
     # an arbitrary orientation convention and carries no information.  The magnitude
     # is the parcel power (unchanged wherever the sign happens to come out positive).
-    n_sign_flipped = int((signed_power < 0).sum())
+    n_sign_flipped = int((np.real(signed_power) < 0).sum())
     power = np.abs(signed_power)
     if n_sign_flipped:
         ctx.logger.info(
@@ -380,6 +405,7 @@ def compute_motor_source(ctx: SubjectContext, epochs: mne.Epochs | None = None,
         "dics_times": centres_used, "dics_db": dics_db, "dics_power": power,
         "label": np.asarray(label.name),
     }
+    metrics.update(fingerprints(ctx.cfg))  # which settings made this result
     _save_result(out_file, arrays, metrics)
     ctx.record(**metrics)
     ctx.logger.info(

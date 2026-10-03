@@ -62,6 +62,17 @@ channels:
   # "token" matches the sensor id exactly ("B4" does not match "B41");
   # "substring" reproduces the tutorial's looser matching.
   bad_sensor_match: token
+  # Also treat sensors flagged bad in the BIDS channels.tsv as bad (a recorded decision,
+  # not processing). false = decide every sensor from the raw data alone.
+  use_metadata_bads: true
+
+# --- What this pipeline may read ------------------------------------------------
+# strict: true makes a recording fail if it reads anything but its raw BIDS data, the
+# FreeSurfer reconstruction and one declared coregistration transform (e.g. another
+# pipeline's processed data, BEM solution or forward model). What was read is always
+# written to *_inputs.json. Use it when sites must be processed identically.
+provenance:
+  strict: false
 
 # --- 1. Sensor quality check (A First Look / A2 Sensor Quality checking) ------
 qc:

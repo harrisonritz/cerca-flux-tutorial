@@ -11,6 +11,8 @@ GUI; it should be inspected visually before any inferential source analysis.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import mne
 from mne.beamformer import apply_dics_csd, apply_lcmv, make_dics, make_lcmv
@@ -50,8 +52,9 @@ def build_forward(ctx: SubjectContext) -> dict[str, mne.Forward]:
             "and point forward.trans at it."
         )
     ctx.state["trans"] = str(trans)
-    ctx.logger.info("forward: using transform %s", trans.name)
-    trans = _load_trans(trans)
+    ctx.allow_input(trans)  # the declared coregistration: the one pre-existing file read
+    ctx.logger.info("forward: using transform %s; the BEM, source space and lead field "
+                    "are built from the FreeSurfer reconstruction", trans.name)
 
     bem_sol = _resolve_bem(ctx, fs_subject, subjects_dir)
     info = _forward_info(ctx)
@@ -87,16 +90,22 @@ def build_forward(ctx: SubjectContext) -> dict[str, mne.Forward]:
     return forwards
 
 
-def _load_trans(path):
-    """The MRI/head transform, from a ``-trans.fif`` or from an existing forward model.
+def export_trans(fwd_file, out_file, overwrite: bool = False) -> Path:
+    """Write the MRI/head transform stored in a forward solution to its own file.
 
-    Some datasets ship a forward solution but no separate transform file (the
-    Oxford example is one); the transform is stored inside the forward model, so
-    ``forward.trans`` may point at a ``*-fwd.fif`` and it is read from there.
+    Some datasets (the Oxford example) ship a forward solution but no separate
+    ``-trans.fif``.  The pipeline never opens a forward model it did not build
+    itself, so the coregistration is taken out of it **once, explicitly**, here.
+    Only the 4 x 4 coregistration is read: the BEM, source space and lead field in
+    that file are not used and are rebuilt by the pipeline.
     """
-    if path.name.endswith(("-fwd.fif", "_fwd.fif")):
-        return mne.read_forward_solution(path, verbose="ERROR")["mri_head_t"]
-    return path
+    out_file = Path(out_file)
+    if out_file.exists() and not overwrite:
+        raise FileExistsError(f"{out_file} exists; pass overwrite=True to replace it")
+    trans = mne.read_forward_solution(fwd_file, verbose="ERROR")["mri_head_t"]
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    mne.write_trans(out_file, trans, overwrite=True)
+    return out_file
 
 
 def _forward_info(ctx: SubjectContext) -> mne.Info:
@@ -116,7 +125,7 @@ def _forward_info(ctx: SubjectContext) -> mne.Info:
 
 
 def _resolve_bem(ctx: SubjectContext, fs_subject: str, subjects_dir) -> mne.bem.ConductorModel:
-    """Reuse the study's BEM solution if it has one, otherwise build and cache it."""
+    """Reuse a BEM named in ``forward.bem`` (or this pipeline's own), else build and cache it."""
     existing = find_bem(ctx.cfg, ctx.rec, fs_subject, ctx.paths)
     if existing is not None and not ctx.cfg.output.overwrite:
         ctx.logger.info("forward: reusing BEM %s", existing.name)

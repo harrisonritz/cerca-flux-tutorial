@@ -14,8 +14,10 @@ from cerca_flux.cli import main
 from cerca_flux.compare import (
     COHORT_LINEWIDTH, MEASURES, REFERENCE_LINEWIDTH, Entry, _shared_limits, cohort_colours,
     compare_motor, draw_measure, metrics_table, plot_overlay, plot_small_multiples,
+    provenance_footer, verify_provenance,
 )
 from cerca_flux.config import dump_config
+from cerca_flux.provenance import ProvenanceError, fingerprints
 
 from ._motor_support import motor_config
 
@@ -193,3 +195,90 @@ def test_the_compare_command_reports_a_missing_reference_without_a_traceback(
     with pytest.raises(SystemExit, match="compare: no motor results for the reference"):
         main(["compare", "--reference", str(reference), "--cohort", str(cohort),
               "--out", str(tmp_path / "o")])
+
+
+# -- provenance: only provably comparable results are drawn --------------------------- #
+
+
+def _stamped(entry: Entry, cfg, audited: bool = True) -> Entry:
+    entry.stamp = fingerprints(cfg)
+    entry.inputs = ({"inputs_strict": True, "inputs_violations": 0, "inputs_transform": "t.fif"}
+                    if audited else None)
+    return entry
+
+
+def test_sites_with_different_shared_preprocessing_are_refused(motor_run, response_study, tmp_path):
+    reference = motor_config(response_study, study={"site": "Oxford"})
+    cohort = motor_config(response_study, study={"site": "Princeton"}, hfc={"order": 3})
+    with pytest.raises(ProvenanceError, match=r"hfc\.order: 2 vs 3"):
+        compare_motor(reference, cohort, out_dir=tmp_path)
+
+
+def test_allow_mismatch_draws_it_anyway_and_the_figure_says_so(motor_run, response_study, tmp_path):
+    cfg, _, _ = motor_run
+    footer = provenance_footer([], [], cfg, checked=False)
+    assert "PROVENANCE CHECKS OFF" in footer
+
+
+def test_results_made_with_other_settings_are_stale_and_left_out(motor_run, response_study, tmp_path):
+    """Changing an option without --overwrite or a new --variant would silently reuse old files."""
+    reference = motor_config(response_study, hfc={"order": 3})
+    cohort = motor_config(response_study, hfc={"order": 3}, study={"subjects": ["01"]})
+    with pytest.raises(RuntimeError, match="stale results"):
+        compare_motor(reference, cohort, out_dir=tmp_path)
+
+
+def test_verify_provenance_excludes_each_kind_of_problem_with_a_reason(response_study):
+    cfg = motor_config(response_study)
+    stale_cfg = motor_config(response_study, hfc={"order": 3})
+    reference = [_stamped(_entry("reference", "01", 260.0), cfg)]
+    cohort = [
+        _stamped(_entry("cohort", "007", 100.0), cfg),                         # fine
+        _stamped(_entry("cohort", "008", 100.0), stale_cfg),                    # stale
+        _entry("cohort", "009", 100.0),                                         # never stamped
+        _stamped(_entry("cohort", "010", 100.0), cfg, audited=False),           # no input audit
+        _stamped(_entry("cohort", "011", 100.0), cfg),                          # audit found reads
+    ]
+    cohort[4].inputs["inputs_violations"] = 2
+    verify_provenance(reference, cohort, cfg, cfg)
+    status = {e.label: e.status for e in cohort}
+    assert status == {"007": "ok", "008": "stale results", "009": "no settings stamp",
+                      "010": "no input audit", "011": "inputs outside the allowed set"}
+    assert [e.usable for e in cohort] == [True, False, False, False, False]
+    assert reference[0].usable
+
+
+def test_a_cohort_result_with_other_shared_settings_than_the_reference_is_excluded(response_study):
+    cfg = motor_config(response_study)
+    reference = [_stamped(_entry("reference", "01", 260.0), cfg)]
+    odd = _stamped(_entry("cohort", "007", 100.0), cfg)
+    odd.stamp = {**odd.stamp, "fingerprint_shared": "deadbeef0000"}   # same site stamp, other shared
+    # current config agrees with its own stamp, so only the pairing check can catch it
+    verify_provenance(reference, [odd], cfg, cfg)
+    assert odd.status == "stale results"                              # stamp != current
+    again = _stamped(_entry("cohort", "008", 100.0), cfg)
+    other_ref = _stamped(_entry("reference", "01", 260.0), motor_config(response_study, hfc={"order": 3}))
+    verify_provenance([other_ref], [again], motor_config(response_study, hfc={"order": 3}), cfg)
+    assert again.status == "different preprocessing" and "deadbeef" not in again.note
+
+
+def test_the_figure_footer_states_what_was_held_fixed_and_what_was_changed(response_study, motor_run):
+    cfg = motor_config(response_study, hfc={"order": 3})
+    reference = [_stamped(_entry("reference", "01", 260.0), cfg)]
+    cohort = [_stamped(_entry("cohort", "007", 100.0), cfg)]
+    footer = provenance_footer(reference, cohort, cfg, checked=True)
+    assert fingerprints(cfg)["fingerprint_shared"] in footer
+    assert "raw BIDS recordings" in footer and "rebuilt here" in footer
+    assert "enforced for 2 of 2 recordings" in footer
+    assert "hfc.order=3" in footer and "Changed from the Cerca defaults" in footer
+
+
+def test_the_metrics_table_carries_the_provenance_columns(motor_run, response_study, tmp_path):
+    reference = motor_config(response_study, study={"site": "Oxford"})
+    cohort = motor_config(response_study, study={"site": "Princeton"})
+    outputs = compare_motor(reference, cohort, out_dir=tmp_path, small_multiples=False)
+    table = pd.read_csv(outputs["metrics"])
+    row = table.iloc[0]
+    assert row["fingerprint_shared"] == fingerprints(reference)["fingerprint_shared"]
+    assert row["inputs_strict"] and row["inputs_violations"] == 0
+    assert row["inputs_transform"] == "sub-01-trans.fif"

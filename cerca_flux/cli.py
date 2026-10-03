@@ -5,6 +5,9 @@
     cerca-flux group    --config study.yaml
     cerca-flux slurm    --config study.yaml --out jobs/
     cerca-flux compare  --reference oxford.yaml --cohort princeton.yaml --variant hfc2
+    cerca-flux settings --config princeton.yaml [--changed]
+    cerca-flux export-trans --fwd sub-01_fwd.fif --out T1s/bem/T1s-trans.fif
+    cerca-flux check    --config princeton.yaml     # are the inputs in place?
     cerca-flux template > study.yaml
 
 Any command that reads a configuration also accepts ``--variant NAME`` (outputs go
@@ -132,7 +135,34 @@ def main(argv: list[str] | None = None) -> int:
                          help="output directory (default: outputs/motor_response/<variant>)")
     compare.add_argument("--no-small-multiples", action="store_true",
                          help="skip the one-panel-per-participant figures")
+    compare.add_argument("--allow-mismatch", action="store_true",
+                         help="draw the figure even if the two sites' shared preprocessing "
+                              "settings differ or a result is stale (the figure says so)")
     compare.add_argument("--verbose", "-v", action="store_true")
+
+    settings = sub.add_parser(
+        "settings", help="show the preprocessing settings, flagged where they differ from Cerca")
+    settings.add_argument("--config", "-c", required=True, type=Path)
+    _add_variant(settings)
+    settings.add_argument("--changed", action="store_true",
+                          help="list only the settings that differ from the Cerca defaults")
+
+    check = sub.add_parser(
+        "check", help="check that every recording's inputs are in place (nothing is processed)")
+    _add_common(check)
+
+    export = sub.add_parser(
+        "export-trans",
+        help="write the MRI/head transform stored in a forward solution to its own file",
+        description="Some datasets ship a forward solution but no -trans.fif. The pipeline "
+                    "never reads a forward model it did not build, so the coregistration is "
+                    "extracted once, here. Only the 4x4 transform is read.",
+    )
+    export.add_argument("--fwd", required=True, type=Path, help="forward solution (*-fwd.fif)")
+    export.add_argument("--out", required=True, type=Path,
+                        help="transform to write, e.g. <fs_subjects_dir>/<fs_subject>/bem/"
+                             "<fs_subject>-trans.fif (where the pipeline looks for it)")
+    export.add_argument("--overwrite", action="store_true")
 
     sub.add_parser("template", help="print an annotated starter configuration")
 
@@ -144,6 +174,33 @@ def main(argv: list[str] | None = None) -> int:
 
     setup_logging(logging.DEBUG if getattr(args, "verbose", False) else logging.INFO)
 
+    if args.command == "export-trans":
+        from .source import export_trans
+
+        try:
+            out = export_trans(args.fwd, args.out, overwrite=args.overwrite)
+        except FileExistsError as exc:
+            raise SystemExit(str(exc)) from None
+        print(f"wrote {out}\n(only the coregistration transform was read from {args.fwd})")
+        return 0
+
+    if args.command == "check":
+        from .preflight import format_preflight, preflight
+
+        cfg = _load(args)
+        rows = preflight(cfg)
+        print(format_preflight(str(args.config.name), rows))
+        return 0 if all(r["ok"] for r in rows) else 1
+
+    if args.command == "settings":
+        from .provenance import fingerprints, format_settings
+
+        cfg = _read_config(args.config, args)
+        print(format_settings(cfg, changed_only=args.changed))
+        print(f"\nshared-settings fingerprint: {fingerprints(cfg)['fingerprint_shared']}"
+              f"   (results from two sites are comparable only if this matches)")
+        return 0
+
     if args.command == "compare":
         from .compare import compare_motor
 
@@ -151,8 +208,9 @@ def main(argv: list[str] | None = None) -> int:
             outputs = compare_motor(
                 _read_config(args.reference, args), _read_config(args.cohort, args),
                 out_dir=args.out, small_multiples=not args.no_small_multiples,
+                check_provenance=not args.allow_mismatch,
             )
-        except (RuntimeError, FileNotFoundError) as exc:
+        except (RuntimeError, FileNotFoundError) as exc:  # ProvenanceError is a RuntimeError
             raise SystemExit(f"compare: {exc}") from None
         for name, path in outputs.items():
             print(f"{name}: {path}")

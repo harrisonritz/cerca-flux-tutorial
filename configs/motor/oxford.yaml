@@ -4,11 +4,11 @@
 # The notebook's layout is data/oxford_sub-01/Data/Cerca_Spatt_BIDS; here it is
 # looked for under $TSX_DIR/data.  Set OXFORD_BIDS to the Cerca_Spatt_BIDS folder
 # if it lives elsewhere.
-extends: base.yaml
+extends: [preprocessing.yaml, motor.yaml]
 
 study:
   site: Oxford
-  bids_root: "${OXFORD_BIDS:-${TSX_DIR}/data/oxford_sub-01/Data/Cerca_Spatt_BIDS}"
+  bids_root: "${OXFORD_BIDS:-${TSX_DATA:-${TSX_DIR}/data}/oxford_sub-01/Data/Cerca_Spatt_BIDS}"
   fs_subjects_dir: derivatives/Freesurfer      # relative to bids_root
   fs_subject_template: T1s                     # the notebook's FreeSurfer subject name
   subjects: ["01"]
@@ -28,8 +28,18 @@ epochs:
     # Oxford: the two button presses (two fingers of one hand) are pooled.
     response: [resp_T, resp_L]
 
-forward:
-  # Oxford ships a forward solution and a BEM but no separate -trans.fif; the
-  # MRI/head transform is read out of the forward solution.
-  trans: "{bids_root}/derivatives/analysis/sub-{subject}/ses-{session}/meg/sub-{subject}_ses-{session}_task-SpAtt_run-01_fwd.fif"
-  bem: "{bids_root}/derivatives/analysis/sub-{subject}/ses-{session}/meg/sub-{subject}_ses-{session}_task-SpAtt_run-01_bem-sol.fif"
+# Only the RAW recording and the shared FreeSurfer reconstruction (derivatives/Freesurfer/
+# T1s) are used. Oxford's own precomputed forward solution and BEM under
+# derivatives/analysis/ are NOT read: the BEM, source space and lead field are rebuilt
+# exactly as for Princeton.
+#
+# The one other input is the MRI/head coregistration, which cannot be recomputed here.
+# Oxford ships it only inside its forward solution, so extract it ONCE, explicitly:
+#
+#   cerca-flux export-trans \
+#       --fwd <OXFORD_BIDS>/derivatives/analysis/sub-01/ses-01/meg/sub-01_ses-01_task-SpAtt_run-01_fwd.fif \
+#       --out <OXFORD_BIDS>/derivatives/Freesurfer/T1s/bem/T1s-trans.fif
+#
+# (only the 4x4 transform is read from that file). The pipeline then finds it in the
+# FreeSurfer subject's bem/ folder, exactly where it finds Princeton's. If you have
+# Oxford's original coregistration as a -trans.fif, put that there instead.

@@ -28,6 +28,7 @@ def motor_config(response_study, **sections) -> Config:
         "source": {"enabled": False, "spaces": ["surface"]}, "morph": {"enabled": False},
         "forward": {"volume": {"enabled": False}, "surface": {"spacing": "oct5"}},
         "motor": {"enabled": True},
+        "provenance": {"strict": True},   # every pipeline test runs under enforcement
         "group": {"enabled": False},
     }
     return _build(Config, _deep_merge(base, sections))

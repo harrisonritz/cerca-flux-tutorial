@@ -26,6 +26,8 @@
 #
 #   sbatch --export=ALL,VARIANT=hfc3,EXTRA="--set hfc.order=3" run/della_cerca_flux.sh
 #
+# Run `uv run cerca-flux check --config configs/motor/princeton.yaml` first to see which participants are ready.
+#
 # Stages (the `motor` preset): qc, hfc, annotate, ica, epochs, motor, forward,
 # motor_source, report.  Every stage caches its output, so a failed task can simply
 # be resubmitted:  sbatch --array=24 run/della_cerca_flux.sh

@@ -13,3 +13,6 @@ __pycache__/
 .ruff_cache/
 .venv/
 *.egg-info/
+
+# run/run_motor_compare.sh logs
+/logs/

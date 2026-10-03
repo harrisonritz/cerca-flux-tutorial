@@ -82,10 +82,16 @@ def response_study(tmp_path_factory, synthetic_study):
 @pytest.fixture(scope="session")
 def motor_run(response_study):
     """The ``motor`` preset run once over the synthetic response-locked recording."""
-    from cerca_flux.paths import discover_recordings
+    import shutil
+
+    from cerca_flux.paths import SubjectPaths, discover_recordings
     from cerca_flux.pipeline import resolve_stages, run_subject
 
     cfg = motor_config(response_study)
     rec = discover_recordings(cfg)[0]
     row = run_subject(cfg, rec, resolve_stages("motor", None))
+    # Later tests re-run this recording from cache, which rewrites the manifest with only the
+    # reads *that* run made; keep the manifest of the run that did the computing.
+    paths = SubjectPaths(cfg, rec)
+    shutil.copy(paths.inputs, paths.inputs.with_name("first_run_inputs.json"))
     return cfg, rec, row

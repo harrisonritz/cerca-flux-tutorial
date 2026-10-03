@@ -17,7 +17,6 @@ from cerca_flux.motor import load_motor_result
 from cerca_flux.paths import SubjectPaths, discover_recordings, raw_bids_path
 from cerca_flux.pipeline import resolve_stages, run_subject
 from cerca_flux.preprocess import load_raw
-from cerca_flux.source import _load_trans
 from cerca_flux.utils import read_json, setup_logging
 
 from ._motor_support import motor_config
@@ -132,6 +131,9 @@ def test_left_m1_time_courses(motor_run):
     cfg, rec, _ = motor_run
     result = load_motor_result(SubjectPaths(cfg, rec).motor_source)
     assert result["label"] == "precentral-lh"
+    # Stored arrays are real: beamformer output is complex-typed, and plotting it would
+    # have silently dropped an imaginary part.
+    assert all(not np.iscomplexobj(v) for v in result.values() if isinstance(v, np.ndarray))
     assert np.allclose(result["dics_times"], np.arange(-0.75, 1.0001, 0.1))
     assert len(result["dics_db"]) == len(result["dics_times"])
     base = (result["lcmv_times"] >= -0.8) & (result["lcmv_times"] <= -0.5)
@@ -168,22 +170,6 @@ def test_motor_stages_are_off_unless_the_config_enables_them(response_study):
     assert not paths.motor_sensor.exists() and not paths.motor_source.exists()
     stages = read_json(paths.preprocessing("state", ".json"))["stages"]
     assert stages["motor"] == "disabled" and stages["motor_source"] == "disabled"
-
-
-# -- transform from a forward solution --------------------------------------- #
-
-
-def test_transform_can_be_read_from_an_existing_forward_solution(motor_run):
-    """Oxford ships a forward solution but no separate -trans.fif."""
-    cfg, rec, _ = motor_run
-    fwd_path = SubjectPaths(cfg, rec).fwd("surface")
-    assert fwd_path.exists()
-    trans = _load_trans(fwd_path)
-    expected = mne.read_forward_solution(fwd_path, verbose="ERROR")["mri_head_t"]
-    assert isinstance(trans, mne.transforms.Transform)
-    assert np.allclose(trans["trans"], expected["trans"])
-    plain = fwd_path.parent / "sub-01-trans.fif"
-    assert _load_trans(plain) == plain
 
 
 # -- provenance of a single-recording run (one SLURM array task) -------------- #

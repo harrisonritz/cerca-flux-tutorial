@@ -1,0 +1,84 @@
+# =============================================================================
+# MOTOR-RESPONSE ANALYSIS and plumbing - identical for every site
+# =============================================================================
+# The preprocessing steps are in preprocessing.yaml, so that everything you may want to
+# change from the Cerca defaults is in one place.  This file holds the analysis that
+# follows it (the motor-response measures) and the settings that keep the comparison
+# honest.  oxford.yaml and princeton.yaml extend both.
+
+study:
+  # Never shared with a plain `cerca-flux` run: stage outputs are cached by file
+  # existence, so two sets of options must not write to the same folder.
+  # --variant NAME appends _NAME to this.
+  derivatives_name: cerca-flux-motor
+
+# --- What this pipeline may read -------------------------------------------------
+# Both sites are processed from their RAW recordings by this pipeline alone. With
+# strict on, a recording may read only: its raw BIDS data (and sidecars), the shared
+# FreeSurfer reconstruction, one declared coregistration transform, and the
+# duration-reference recording. Anything else - another pipeline's derivatives, processed
+# data, a precomputed BEM, source space or forward model - is blocked and the recording
+# fails. What was read is written to <derivatives>/.../*_inputs.json.
+provenance:
+  strict: true
+
+# The BEM solution, source space and lead field are always rebuilt from the FreeSurfer
+# surfaces with the settings below (forward.bem must stay unset in strict mode).
+forward:
+  volume: {enabled: false}
+  surface: {enabled: true, spacing: oct6, surface: white, mindist: 5.0, add_dist: false}
+
+# --- Stages this comparison does not need ------------------------------------------
+erf:    {enabled: false}
+tfr:    {enabled: false}
+mvpa:   {enabled: false}
+source: {enabled: false, spaces: [surface]}
+morph:  {enabled: false}
+group:  {enabled: false}
+
+# --- The motor-response analysis ----------------------------------------------------
+motor:
+  enabled: true
+  conditions: [response]
+  sensor:
+    sensors: [C1, C2, C3, C4, C5, C6]    # central radial sensors pooled into the RMS
+    min_sensors: 3
+    erf_baseline: [-0.8, -0.6]           # baseline-SD normalisation window
+    erf_active: [-0.1, 0.3]
+    beta_fmin: 15.0
+    beta_fmax: 30.0
+    beta_fstep: 2.0
+    beta_n_cycles_divisor: 2.0           # n_cycles = f / 2 -> 0.5 s windows
+    beta_time_bandwidth: 2.0
+    beta_decim: 2
+    beta_baseline: [-0.9, -0.6]
+    movement_window: [-0.4, 0.1]
+    rebound_window: [0.4, 0.9]
+  source:
+    enabled: true
+    space: surface
+    picks: all                           # notebook as run: X, Y and Z enter the beamformer
+    label: precentral-lh
+    parc: aparc
+    reg: 0.05
+    weight_norm: nai
+    pick_ori: max-power
+    rank: relative
+    cov_tmin: -0.8
+    cov_tmax: 0.8
+    lcmv_baseline: [-0.8, -0.5]
+    lcmv_response: [-0.2, 0.3]
+    dics_fmin: 15.0
+    dics_fmax: 30.0
+    dics_bandwidth: 4.0
+    dics_window: 0.4
+    dics_step: 0.1
+    dics_tmin: -0.75
+    dics_tmax: 1.0
+    dics_baseline: [-0.75, -0.5]
+
+output:
+  report: true
+  figures: true
+  figure_dpi: 150
+  overwrite: false

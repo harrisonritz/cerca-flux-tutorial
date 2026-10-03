@@ -187,10 +187,17 @@ EEG.  Both source spaces are built when configured:
 * **surface**: `oct6` on the white surface (~4098 vertices/hemisphere).
 
 Coregistration is **not** re-fitted.  The transform is located via
-`forward.trans` (templates support `{fs_subject}`, `{subject}`, … and globs) or
-by searching the FreeSurfer `bem/` folder.  A missing transform is a clear
-error, not a silent fallback — verify each coregistration visually before
-trusting a source result.
+`forward.trans` (templates support `{fs_subject}`, `{subject}`, … and globs), in this
+pipeline's own derivatives, or in the FreeSurfer subject's `bem/` folder.  Other pipelines'
+`derivatives/` are never searched, and a `*-bem-sol.fif` that happens to sit in the FreeSurfer
+folder is not reused: the BEM is built from the FreeSurfer surfaces unless `forward.bem` names
+one.  A missing transform is a clear error, not a silent fallback — verify each coregistration
+visually before trusting a source result.  `cerca-flux export-trans` extracts a transform from a
+forward solution once, explicitly, for datasets that ship no `-trans.fif`; `cerca-flux check`
+verifies every recording's inputs before a long run.
+
+With `provenance.strict: true` a recording may read only its raw BIDS data, the FreeSurfer
+reconstruction and the declared transform (see **[MOTOR_COMPARISON.md](MOTOR_COMPARISON.md)**).
 
 The forward model is built for every channel that survived preprocessing and
 narrowed to the analysis picks at stage 10, so one solution serves both the
